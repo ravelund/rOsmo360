@@ -29,6 +29,7 @@ pub fn tool(tool: &str) -> Command {
             })
             .collect()
     });
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = match found.iter().find(|(name, _)| name == tool) {
         Some((_, path)) => Command::new(path),
         None => Command::new(tool),

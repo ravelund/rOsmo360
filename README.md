@@ -104,6 +104,8 @@ The program is `target/release/rosmo360`. `packaging/build-release.sh` builds th
 
 On an **Apple Silicon Mac** (with [Rust](https://rustup.rs) and `xcode-select --install`), `sh packaging/macos/build.sh` builds it, fetches a static arm64 ffmpeg (GPL, with VideoToolbox) and makes `target/release/rOsmo360.app` to open from the Finder. There's no signed download for the Mac yet.
 
+For **Windows**, `sh packaging/windows/build.sh` cross-builds on Linux (docker, MinGW): `rosmo360.exe` with its icon, beside an ffmpeg built from pinned sources (GPL, with Direct3D 11, NVDEC and Vulkan decoding), zipped as `target/windows/rOsmo360-x86_64-windows.zip`, with those sources in `rOsmo360-windows-ffmpeg-sources.tar`.
+
 ## Usage
 
 The **[user guide](docs/user-guide.md)** walks through the whole app with screenshots: watching, projections, stabilisation, the timeline, keyframes, crossfades, music, effects, titles and overlays, projects and exporting.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the release assets into dist/: the binary archive (with install.sh), the
-# AppImage, the Flatpak with its ffmpeg's sources, install.sh on its own and
-# SHA256SUMS. Needs docker, flatpak with org.flatpak.Builder (flatpak install
+# AppImage, the Flatpak with its ffmpeg's sources, the Windows zip with its
+# ffmpeg's sources, install.sh on its own and SHA256SUMS. Needs docker, flatpak with org.flatpak.Builder (flatpak install
 # --user flathub org.flatpak.Builder) and network access.
 set -eu
 cd "$(dirname "$0")/.."
@@ -67,6 +67,12 @@ done
 tar -cf "$dist/rOsmo360-flatpak-ffmpeg-sources.tar" -C "$dist" "$(basename "$src")"
 rm -rf "$src"
 
+# Windows: the zip with its own ffmpeg, and that ffmpeg's sources (see
+# packaging/windows/build.sh), built fresh so they match.
+sh packaging/windows/build.sh --fresh-ffmpeg
+cp target/windows/rOsmo360-x86_64-windows.zip target/windows/rOsmo360-windows-ffmpeg-sources.tar "$dist/"
+
 (cd "$dist" && sha256sum rosmo360-x86_64-linux.tar.gz rOsmo360-x86_64.AppImage rOsmo360-x86_64.flatpak \
-    rOsmo360-flatpak-ffmpeg-sources.tar install.sh > SHA256SUMS)
+    rOsmo360-flatpak-ffmpeg-sources.tar rOsmo360-x86_64-windows.zip rOsmo360-windows-ffmpeg-sources.tar \
+    install.sh > SHA256SUMS)
 ls -l "$dist"
