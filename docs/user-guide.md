@@ -52,6 +52,8 @@ For the install script and the AppImage, install `ffmpeg` from your distribution
 - **AppImage**: download `rOsmo360-x86_64.AppImage`, make it executable (in your file manager's properties, or `chmod +x rOsmo360-x86_64.AppImage`) and double-click it.
 - **Flatpak**: download `rOsmo360-x86_64.flatpak` and open it with your software centre (Discover, GNOME Software), or install it in a terminal with `flatpak install --user rOsmo360-x86_64.flatpak`. It brings everything it needs, ffmpeg included, so you can skip installing ffmpeg. Its exports are a little slower on NVIDIA cards.
 
+**Windows (beta)**: download `rOsmo360-x86_64-windows.zip` from the same page, unzip it anywhere and double-click `rosmo360.exe` (ffmpeg comes with it). Windows may warn that the app isn't signed: choose **More info → Run anyway**. It's a beta, not yet tested on a real Windows PC with a graphics card; please report what doesn't work in the [issues](https://github.com/ravelund/rOsmo360/issues).
+
 On an Apple Silicon Mac, rOsmo360 can be built from source for now; see the [README](../README.md#building).
 
 ### What you need

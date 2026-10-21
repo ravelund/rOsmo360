@@ -8,9 +8,7 @@ A 360° video player and editor for **DJI Osmo 360** footage, written in Rust. I
 
 Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
-Ready-made Linux builds, with an install script, an AppImage and a Flatpak, are on the [releases page](https://github.com/ravelund/rOsmo360/releases/latest); see [Installing](#installing). On an Apple Silicon Mac it builds from source; see [Building](#building).
-
-**Windows support is coming soon**: a download with everything included (ffmpeg too), to unzip and double-click, is being tested now.
+Ready-made Linux builds, with an install script, an AppImage and a Flatpak, are on the [releases page](https://github.com/ravelund/rOsmo360/releases/latest), and a **Windows** zip as a **beta**; see [Installing](#installing). On an Apple Silicon Mac it builds from source; see [Building](#building).
 
 ## Why
 
@@ -73,7 +71,7 @@ I vibed this tool primarily for Linux, since I couldn't find anything close to D
 - On Linux, ALSA for sound (`alsa-lib`, or `libasound2-dev` on Debian/Ubuntu). PipeWire and PulseAudio work through it.
 - To build: Rust 1.88 or newer.
 
-Developed and tested on Linux (KDE Plasma, NVIDIA RTX 3090) and on an Apple Silicon Mac (M4 Pro, macOS 27). Windows support is coming soon (in testing).
+Developed and tested on Linux (KDE Plasma, NVIDIA RTX 3090) and on an Apple Silicon Mac (M4 Pro, macOS 27). Windows is in beta: tested in a virtual machine without a GPU, not yet on a real Windows PC.
 
 ## Installing
 
@@ -94,6 +92,8 @@ Ready-made builds for x86_64 Linux are on the [releases page](https://github.com
   ```
 
   It brings its own ffmpeg (GPL, with VA-API, Vulkan and NVDEC decoding; built without `scale_cuda`, so exports decode with Vulkan, ~16 rather than ~21 fps at 1080p on an RTX 3090) and needs nothing else from the system. Commands work through `flatpak run io.github.ravelund.rOsmo360 export clip.OSV -o out.mp4`. It sees your files, but has a `/tmp` of its own, and keeps its settings and cache in `~/.var/app/io.github.ravelund.rOsmo360`. The sources of the ffmpeg and x264 inside are in `rOsmo360-flatpak-ffmpeg-sources.tar` on the same release.
+
+**Windows (beta)**: download `rOsmo360-x86_64-windows.zip`, unzip it anywhere and double-click `rosmo360.exe`; dropping a clip or project on it opens that. It brings its own ffmpeg (in the `ffmpeg` folder beside it; GPL, with Direct3D 11, NVDEC and Vulkan decoding), and from a terminal it takes the same commands as on Linux (`rosmo360 export clip.OSV -o out.mp4`). The exe isn't signed, so Windows SmartScreen may warn the first time: **More info → Run anyway**. It's a beta: it has run in a virtual machine without a GPU (slowly, with exports on the CPU) and under Wine, but not yet on a real Windows PC with a graphics card, so GPU decoding there is untested. Reports are welcome in the [issues](https://github.com/ravelund/rOsmo360/issues). The sources of its ffmpeg are in `rOsmo360-windows-ffmpeg-sources.tar` on the same release.
 
 ## Building
 
@@ -314,7 +314,7 @@ Clips' telemetry and thumbnails, and songs' waveforms, are cached in `~/.cache/r
 - Picture-in-picture video on the overlay track.
 - 360° metadata on equirectangular exports, so YouTube and VR players show them as 360° video.
 - Smooth full-resolution playback on modest hardware, and faster 10-bit exports (zero-copy decoding).
-- Windows support, coming soon: a zip with ffmpeg included, in testing now. And a signed macOS download.
+- Windows out of beta, once it's been tested on real PCs with a GPU; a signed Windows exe and a signed macOS download.
 - LUTs chosen by camera for ordinary videos (a DJI Action's or a phone's log).
 
 ## License
