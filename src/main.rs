@@ -520,6 +520,13 @@ struct StitchOpts {
     /// Blend everywhere instead of cutting where the lenses disagree.
     #[arg(long)]
     no_cut: bool,
+    /// Give each lens the other's video track. Which track a lens was
+    /// recorded to isn't in the clip (telemetry-parser goes by the camera
+    /// model), and swapped back-to-back lenses still stitch cleanly, only
+    /// half a turn round the stick: horizon mode then swings by twice the
+    /// tilt and stick follow looks away from the holder (issue #4).
+    #[arg(long)]
+    swap_lenses: bool,
 }
 
 impl Default for StitchOpts {
@@ -535,6 +542,7 @@ impl Default for StitchOpts {
             exposure: false,
             no_align: false,
             no_cut: false,
+            swap_lenses: false,
         }
     }
 }
@@ -601,7 +609,12 @@ impl Pipeline {
         let ProjectionKind::Rig { cameras, .. } = &projection.kind else {
             bail!("not a multi-lens rig");
         };
-        let lenses = cameras.iter().map(stitch::Lens::new).collect::<Result<Vec<_>>>()?;
+        let mut lenses = cameras.iter().map(stitch::Lens::new).collect::<Result<Vec<_>>>()?;
+        if opts.swap_lenses {
+            for lens in &mut lenses {
+                lens.input = 1 - lens.input;
+            }
+        }
         let tracks = rig
             .pictures
             .iter()

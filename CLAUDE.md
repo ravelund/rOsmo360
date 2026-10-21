@@ -192,6 +192,7 @@ Debug flags on `stitch`/`render`/`export`/`preview`:
 - `--no-rs`: disable rolling-shutter correction.
 - `--exposure`: turn exposure matching on (off by default). `--no-align`, `--no-cut`: disable the other seam corrections, to compare.
 - `--imu-axes`, `--world-z-down`: override the IMU mapping (only for other bodies).
+- `--swap-lenses`: give each lens the other's track (`Lens::input`). Which lens went to which track isn't in the clip; telemetry-parser's `master_video_track` goes by product name only. Swapped back-to-back lenses still stitch seamlessly, half a turn round the stick axis, so only stabilisation shows it: on 0037 at 5 s (49° tilt) horizon mode came out ~98° off. Added 2026-10-21 for issue #4 (100 fps clips: stick follow looks away from the holder, `offset_yaw: 180` fixes it), which a swap in that mode would explain; unconfirmed until the user films a 100 fps clip.
 
 Player keys:
 
