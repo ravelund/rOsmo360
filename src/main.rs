@@ -774,7 +774,12 @@ impl Pipeline {
             return Ok(Stream::Tracks(vec![ffmpeg::Decoder::with(&self.input, flat.track, start, self.hw, (w as usize, h as usize), flat.out(None, self.rate))?]));
         }
         Ok(match &self.proxy {
-            Some(proxy) => Stream::Proxy(ffmpeg::Decoder::new(proxy, 0, start, self.hw)?, self.tracks.clone()),
+            // At the clip's rate: in the 100 fps mode the proxy is 25 fps,
+            // and frames are timed n / fps.
+            Some(proxy) => {
+                let out = ffmpeg::Out { rate: Some(self.fps), ..Default::default() };
+                Stream::Proxy(ffmpeg::Decoder::with(proxy, 0, start, self.hw, ffmpeg::dimensions(proxy, 0)?, out)?, self.tracks.clone())
+            }
             None => Stream::Tracks(self.tracks.iter().map(|&n| ffmpeg::Decoder::new(&self.input, n, start, self.hw)).collect::<Result<_>>()?),
         })
     }
