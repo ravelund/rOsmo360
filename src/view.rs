@@ -25,7 +25,8 @@ pub enum Projection {
 impl Projection {
     pub const ALL: [Projection; 3] = [Projection::Perspective, Projection::LittlePlanet, Projection::Equirect];
 
-    /// How far between the perspective (0) and little-planet (1) mappings.
+    /// How far between the perspective (0) and little-planet (1) mappings
+    /// it starts at; a view's `correction` can then set any in between.
     fn planet(self) -> Option<f64> {
         match self {
             Projection::Perspective => Some(0.0),
@@ -54,6 +55,11 @@ pub struct View {
     /// sphere the picture's height spans.
     pub fov: f64,
     pub projection: Projection,
+    /// Where between perspective (0) and little planet (1) the mapping is,
+    /// as DJI Studio's "Correction angle": 0 keeps straight lines straight,
+    /// 1 shows twice the angle at the same FOV, bending them. The
+    /// projection picker sets it to its own; equirect ignores it.
+    pub correction: f64,
 }
 
 /// Opens on the little planet, as DJI Studio does.
@@ -67,8 +73,8 @@ impl View {
     /// The starting view for a projection: the planet looks straight down.
     pub fn home(projection: Projection) -> View {
         match projection {
-            Projection::LittlePlanet => View { yaw: 0.0, pitch: -90.0, roll: 0.0, fov: 120.0, projection },
-            _ => View { yaw: 0.0, pitch: 0.0, roll: 0.0, fov: 90.0, projection },
+            Projection::LittlePlanet => View { yaw: 0.0, pitch: -90.0, roll: 0.0, fov: 120.0, projection, correction: 1.0 },
+            _ => View { yaw: 0.0, pitch: 0.0, roll: 0.0, fov: 90.0, projection, correction: 0.0 },
         }
     }
 
@@ -77,9 +83,24 @@ impl View {
     }
 
     /// The planet zooms out until the whole sphere is a small disc, the way
-    /// DJI Studio's tiny planet does.
+    /// DJI Studio's tiny planet does; so may a perspective bent most of the
+    /// way to it.
     pub fn fov_range(&self) -> (f64, f64) {
-        if self.projection == Projection::LittlePlanet { (10.0, 179.5) } else { (20.0, 150.0) }
+        if self.projection == Projection::LittlePlanet || self.correction > 0.5 { (10.0, 179.5) } else { (20.0, 150.0) }
+    }
+
+    /// The azimuthal mapping's d (`Camera::planet`), or `None` for equirect.
+    fn planet(&self) -> Option<f64> {
+        self.projection.planet().map(|_| self.correction)
+    }
+
+    /// How wide a picture `aspect` wide for its height shows, side to side,
+    /// in degrees: DJI Studio's "Zoom". `None` for equirect.
+    pub fn across(&self, aspect: f64) -> Option<f64> {
+        let d = self.planet()?;
+        let s = (self.fov.to_radians() / 2.0).tan() * aspect;
+        // As `Camera::ray`: s = sin θ / (d + cos θ) solved for θ.
+        Some(2.0 * (s.atan() + (s * d / (1.0 + s * s).sqrt()).asin()).to_degrees())
     }
 
     /// Zooms by `steps` scroll notches, each scaling the picture by 10%:
@@ -96,7 +117,7 @@ impl View {
             half: (self.fov / FLAT_DEGREES / 2.0) as f32,
             roll: self.roll.to_radians() as f32,
         };
-        Camera { user: self.matrix(), zoom: (self.fov.to_radians() / 2.0).tan(), planet: self.projection.planet(), grade: Default::default(), lut: None, crop }
+        Camera { user: self.matrix(), zoom: (self.fov.to_radians() / 2.0).tan(), planet: self.planet(), grade: Default::default(), lut: None, crop }
     }
 
     /// view_from_screen-ray: yaw about +y, then pitch about +x, then roll.
@@ -352,6 +373,9 @@ impl Serialize for Keyframe {
             roll: f64,
             fov: f64,
             projection: Projection,
+            /// Only where it isn't the projection's own.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            correction: Option<f64>,
             ease: Ease,
         }
         let (fixed, follows) = (self.follow.is_none(), self.follow.is_some());
@@ -366,6 +390,7 @@ impl Serialize for Keyframe {
             roll: v.roll,
             fov: v.fov,
             projection: v.projection,
+            correction: v.projection.planet().filter(|&d| d != v.correction).map(|_| v.correction),
             ease: self.ease,
         }
         .serialize(s)
@@ -426,7 +451,7 @@ impl Keyframes {
         let i = k.partition_point(|f| f.t <= t);
         let held = |f: &Keyframe| {
             let v = f.view_with(aim, t);
-            (v, v.projection.planet())
+            (v, v.planet())
         };
         if i == 0 || i == k.len() {
             return k.get(i.saturating_sub(1)).map(held);
@@ -451,17 +476,18 @@ impl Keyframes {
         }
         let zoom = |v: View| (v.fov.to_radians() / 2.0).tan().ln();
         let near = if u < 0.5 { va } else { vb };
+        let planet = match (va.planet(), vb.planet()) {
+            (Some(p), Some(q)) => Some(lerp(p, q)),
+            // Equirect has no in-between: cut half way.
+            _ => near.planet(),
+        };
         let view = View {
             yaw: lerp(va.yaw, vb.yaw),
             pitch: lerp(va.pitch, vb.pitch),
             roll: lerp(va.roll, vb.roll),
             fov: 2.0 * lerp(zoom(va), zoom(vb)).exp().atan().to_degrees(),
             projection: near.projection,
-        };
-        let planet = match (va.projection.planet(), vb.projection.planet()) {
-            (Some(p), Some(q)) => Some(lerp(p, q)),
-            // Equirect has no in-between: cut half way.
-            _ => near.projection.planet(),
+            correction: planet.unwrap_or(near.correction),
         };
         Some((view, planet))
     }
@@ -600,6 +626,7 @@ struct RawKeyframe {
     roll: Option<f64>,
     fov: Option<f64>,
     projection: Option<Projection>,
+    correction: Option<f64>,
     ease: Option<Ease>,
     follow: Option<Follow>,
     offset_yaw: Option<f64>,
@@ -626,9 +653,11 @@ impl TryFrom<Vec<RawKeyframe>> for Keyframes {
             if follow.is_none() && (r.offset_yaw.is_some() || r.offset_pitch.is_some()) {
                 bail!("keyframe at {} s has offset_yaw/offset_pitch but follows nothing", r.t);
             }
+            // A projection named anew starts at its own correction.
             let base = match (prev, r.projection) {
                 (None, p) => View::home(p.unwrap_or(Projection::Perspective)),
-                (Some(p), proj) => View { projection: proj.unwrap_or(p.view.projection), ..p.view },
+                (Some(p), Some(proj)) if proj != p.view.projection => View { projection: proj, correction: View::home(proj).correction, ..p.view },
+                (Some(p), _) => p.view,
             };
             // Offsets carry over between keyframes following the same thing;
             // a fixed keyframe after a following one has no angles to carry.
@@ -644,9 +673,12 @@ impl TryFrom<Vec<RawKeyframe>> for Keyframes {
                 },
                 None => (r.yaw.unwrap_or(base.yaw), r.pitch.unwrap_or(base.pitch)),
             };
-            let view = View { yaw, pitch, roll: r.roll.unwrap_or(base.roll), fov: r.fov.unwrap_or(base.fov), projection: base.projection };
+            let view = View { yaw, pitch, roll: r.roll.unwrap_or(base.roll), fov: r.fov.unwrap_or(base.fov), projection: base.projection, correction: r.correction.unwrap_or(base.correction) };
             if !(1.0..=359.0).contains(&view.fov) {
                 bail!("fov {} at {} s is out of range (1–359°)", view.fov, r.t);
+            }
+            if !(0.0..=1.0).contains(&view.correction) {
+                bail!("correction {} at {} s is out of range (0–1)", view.correction, r.t);
             }
             keyframes.push(Keyframe { t: r.t, view, ease: r.ease.or(prev.map(|p| p.ease)).unwrap_or_default(), follow });
         }
@@ -703,13 +735,40 @@ mod tests {
         )
         .unwrap();
         let k = &r.keyframes;
-        assert_eq!(k[0].view, View { yaw: 30.0, pitch: 0.0, roll: 0.0, fov: 70.0, projection: Projection::Perspective });
+        assert_eq!(k[0].view, View { yaw: 30.0, pitch: 0.0, roll: 0.0, fov: 70.0, projection: Projection::Perspective, correction: 0.0 });
         assert_eq!((k[1].view.yaw, k[1].view.pitch, k[1].view.fov), (30.0, 10.0, 70.0));
         assert_eq!((k[2].view.projection, k[2].ease), (Projection::LittlePlanet, Ease::Linear));
         assert_eq!(r.span(), Some((1.0, 5.0)));
         assert_eq!(r.aspect.map(|a| a.size(1080)), Some([1080, 1920]));
         let back: Reframe = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn correction_bends_between_the_projections() {
+        let k: Keyframes = serde_json::from_str(
+            r#"[{"t": 0, "fov": 100.2}, {"t": 1, "correction": 0.49, "fov": 84.1}, {"t": 2}, {"t": 3, "projection": "little-planet"}, {"t": 4, "projection": "perspective", "ease": "linear"}, {"t": 6, "correction": 1}]"#,
+        )
+        .unwrap();
+        let d: Vec<f64> = k.iter().map(|k| k.view.correction).collect();
+        // Carried over, reset by a projection named anew, given its own.
+        assert_eq!(d, [0.0, 0.49, 0.49, 1.0, 0.0, 1.0]);
+        // DJI Studio's readouts at 16:9: Zoom 129.6° and 259.2° for FOV
+        // 100.2° at correction 0 and 1, 165.5° for 84.1° at 0.49.
+        let across = |i: usize, fov| View { fov, ..k[i].view }.across(16.0 / 9.0).unwrap();
+        assert!((across(0, 100.2) - 129.6).abs() < 0.05 && (across(5, 100.2) - 259.2).abs() < 0.05);
+        assert!((across(1, 84.1) - 165.5).abs() < 0.5);
+        assert_eq!(View::home(Projection::Equirect).across(2.0), None);
+        // The drawing follows it, and moves evenly between keyframes.
+        assert_eq!(k.camera_at(1.5, &|_, _| None).unwrap().planet, Some(0.49));
+        assert!((k.camera_at(5.0, &|_, _| None).unwrap().planet.unwrap() - 0.5).abs() < 1e-9);
+        assert!((k.view_at(5.0, &|_, _| None).unwrap().correction - 0.5).abs() < 1e-9);
+        // Written only where it isn't the projection's own.
+        let json = serde_json::to_string(&k).unwrap();
+        assert_eq!(json.matches("correction").count(), 3, "{json}");
+        let back: Keyframes = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, k);
+        assert!(serde_json::from_str::<Keyframes>(r#"[{"t": 0, "correction": 1.5}]"#).is_err());
     }
 
     #[test]
