@@ -36,6 +36,8 @@ pub struct Settings {
     /// How tall the timeline's lanes are, as the divider above the
     /// transport row left them (`timeline::Rows`).
     pub timeline_scale: f32,
+    /// The view-angles strip shows under the transport row.
+    pub view_angles: bool,
 }
 
 impl Default for Settings {
@@ -57,6 +59,7 @@ impl Default for Settings {
             ten_bit: false,
             dlog_m_lut: None,
             timeline_scale: 1.0,
+            view_angles: true,
         }
     }
 }

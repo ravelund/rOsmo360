@@ -21,6 +21,7 @@ mod effects;
 pub mod music;
 mod timeline;
 mod divider;
+mod angles;
 
 use crate::ffmpeg::{self, Hwaccel};
 use crate::stab::{ImuAxes, Mode, Stabilizer};
@@ -453,6 +454,22 @@ enum Message {
     /// Scroll notches; positive zooms out.
     Zoom(f64),
     Fov(f64),
+    /// Typed into a field of the view-angles strip.
+    AngleInput(angles::Angle, String),
+    /// Enter in one: show the value as set.
+    AngleDone,
+    /// Scrolled on a field: a step up (1) or down (−1).
+    AngleNudge(angles::Angle, f64),
+    /// A name dragged: starting, by this many pixels, let go.
+    AngleScrubStart(angles::Angle),
+    AngleScrub(angles::Angle, f64),
+    AngleScrubDone,
+    /// ↑ or ↓ pressed: the field that has the keyboard, if one does, and
+    /// the direction (`angles::arrow`).
+    AngleArrow(Option<angles::Angle>, f64),
+    /// Show the view-angles strip.
+    ShowAngles(bool),
+    Modifiers(keyboard::Modifiers),
     Stab(Mode),
     Projection(Projection),
     Source(Source),
@@ -600,6 +617,15 @@ struct App {
     muted: bool,
     view_size: Size,
     aspect: Aspect,
+    /// The view-angles strip shows under the transport row.
+    angles_shown: bool,
+    /// A field of it as typed so far, until Enter or another message.
+    angle_draft: Option<(angles::Angle, String)>,
+    /// The keyboard's modifiers, for Shift on a scroll.
+    modifiers: keyboard::Modifiers,
+    /// The field whose name is being dragged, from its press to its
+    /// release (`angles::Scrub`).
+    scrubbing: Option<angles::Angle>,
     /// What the last save did, or that one is running.
     save_status: Option<String>,
     /// Picking a colour to track: `Some(None)` until a box is drawn, then
@@ -681,6 +707,10 @@ impl App {
             auto_key_at: None,
             split: saved.timeline_scale,
             split_kept: saved.timeline_scale,
+            angles_shown: saved.view_angles,
+            angle_draft: None,
+            modifiers: keyboard::Modifiers::default(),
+            scrubbing: None,
             settings_open: false,
             fullscreen: false,
             volume: saved.volume,
@@ -719,6 +749,7 @@ impl App {
             ten_bit: self.ten_bit,
             dlog_m_lut: self.dlog_m_lut.clone(),
             timeline_scale: self.split_kept,
+            view_angles: self.angles_shown,
         }
     }
 
@@ -728,9 +759,17 @@ impl App {
         // What may look around (a key may turn the view); a let-go drag or
         // anything else done ends a look-around's undo step. Frames and
         // the view's size go by without ending it.
-        let looking = matches!(message, Message::Look { .. } | Message::Zoom(_) | Message::Fov(_) | Message::ResetView | Message::Key(..));
-        if !looking && !matches!(message, Message::Tick | Message::LoadingTick | Message::ViewSize(_)) {
+        let looking = matches!(
+            message,
+            Message::Look { .. } | Message::Zoom(_) | Message::Fov(_) | Message::ResetView | Message::Key(..) | Message::AngleInput(..) | Message::AngleNudge(..) | Message::AngleArrow(..) | Message::AngleScrub(..)
+        );
+        let quiet = matches!(message, Message::Tick | Message::LoadingTick | Message::ViewSize(_) | Message::Modifiers(_));
+        if !looking && !quiet {
             self.auto_key_at = None;
+        }
+        // A field shows what's typed only while it's being typed.
+        if !quiet && !matches!(message, Message::AngleInput(..)) {
+            self.angle_draft = None;
         }
         let task = self.handle(message);
         if looking {
@@ -1309,6 +1348,7 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         let keys = keyboard::listen().filter_map(|e| match e {
             keyboard::Event::KeyPressed { key, modifiers, .. } => Some(Message::Key(key, modifiers)),
+            keyboard::Event::ModifiersChanged(m) => Some(Message::Modifiers(m)),
             _ => None,
         });
         // The crossfade's partner too: paused, its frame came in only with
@@ -2223,6 +2263,16 @@ impl App {
             }
             Message::Zoom(deg) => self.free_look().zoom_by(deg),
             Message::Fov(deg) => self.free_look().fov = deg,
+            Message::AngleInput(angle, typed) => self.type_angle(angle, typed),
+            Message::AngleDone => {}
+            Message::AngleScrubStart(angle) => self.scrubbing = Some(angle),
+            Message::AngleScrubDone => self.scrubbing = None,
+            Message::AngleScrub(angle, dx) => self.scrub_angle(angle, dx),
+            Message::AngleNudge(angle, dir) => self.nudge_angle(angle, dir),
+            Message::AngleArrow(Some(angle), dir) => self.nudge_angle(angle, dir),
+            Message::AngleArrow(None, dir) => self.free_look().pitch += 5.0 * dir,
+            Message::ShowAngles(on) => self.angles_shown = on,
+            Message::Modifiers(m) => self.modifiers = m,
             Message::Stab(mode) => {
                 // The playing cut's, and the one new cuts get.
                 self.opts.stabilize = mode;
@@ -2992,6 +3042,10 @@ impl App {
                     self.goto(i, t, playing);
                 }
             }
+            // With the strip showing, a field typed in may want them.
+            Key::Named(arrow @ (Named::ArrowUp | Named::ArrowDown)) if self.angles_shown => {
+                return angles::arrow(if arrow == Named::ArrowUp { 1.0 } else { -1.0 });
+            }
             Key::Named(Named::ArrowUp) => self.free_look().pitch += step,
             Key::Named(Named::ArrowDown) => self.free_look().pitch -= step,
             Key::Named(Named::Home) => self.free_look().reset(),
@@ -3451,7 +3505,7 @@ impl App {
             text("Drag to give the timeline or the picture more room (double-click: as it was)"),
             tooltip::Position::Top,
         );
-        column![top, view, divider, transport, timeline].push(error.map(|e| container(e).padding([0, 10]))).push(credit()).into()
+        column![top, view, divider, transport].push(self.angles_strip()).push(timeline).push(error.map(|e| container(e).padding([0, 10]))).push(credit()).into()
     }
 }
 

@@ -76,6 +76,13 @@ impl App {
                 note("Off: looking around is free until you press K."),
             ]
             .spacing(6),
+            rule::horizontal(1),
+            text("View angles").size(15),
+            column![
+                toggler(self.angles_shown).label("Show the view as numbers").on_toggle(Message::ShowAngles),
+                note("A strip under the transport row with the yaw, pitch, roll, FOV and correction: type one, or drag its name sideways, to set it as dragging the view would; scroll or ↑ ↓ on a field nudges it, Shift for finer steps. Handy for giving clips from a camera mounted the same way the same framing."),
+            ]
+            .spacing(6),
         ]
         .spacing(12)
         .padding(12);
