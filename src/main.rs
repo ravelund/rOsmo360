@@ -793,7 +793,13 @@ impl Pipeline {
                 let out = ffmpeg::Out { rate: Some(self.fps), ..Default::default() };
                 Stream::Proxy(ffmpeg::Decoder::with(proxy, 0, start, self.hw, ffmpeg::dimensions(proxy, 0)?, out)?, self.tracks.clone())
             }
-            None => Stream::Tracks(self.tracks.iter().map(|&n| ffmpeg::Decoder::new(&self.input, n, start, self.hw)).collect::<Result<_>>()?),
+            // At the edit's rate where it's the clip's own (`cut_pipelines`).
+            None => Stream::Tracks(
+                self.tracks
+                    .iter()
+                    .map(|&n| ffmpeg::Decoder::with(&self.input, n, start, self.hw, ffmpeg::dimensions(&self.input, n)?, ffmpeg::Out { rate: self.rate, ..Default::default() }))
+                    .collect::<Result<_>>()?,
+            ),
         })
     }
 
@@ -851,11 +857,13 @@ fn cut_pipelines(project: &mut project::Project, opts: &StitchOpts, proxy: bool)
         of_cut.push(i);
     }
     // The edit runs at its first 360 clip's rate (its first video's if it
-    // has none, else 30 fps); ordinary videos at another rate are decoded
-    // at it, frames repeated or dropped, so they keep their speed and stay
-    // in step, and pictures are repeated at it.
+    // has none, else 30 fps); clips at another rate, Osmo clips too (the
+    // 100 fps mode beside 30 fps ones), are decoded at it, frames repeated
+    // or dropped, so they keep their speed and stay in step, and pictures
+    // are repeated at it. A 100 fps cut in a 30 fps edit came out 200
+    // frames for 2 s, played 3.3 times slow.
     let fps = pipelines.iter().find(|p| p.flat.is_none()).or(pipelines.iter().find(|p| p.flat.is_some_and(|f| !f.picture))).map_or(30.0, |p| p.fps);
-    for p in pipelines.iter_mut().filter(|p| p.flat.is_some_and(|f| f.picture) || (p.flat.is_some() && (p.fps - fps).abs() > 0.01)) {
+    for p in pipelines.iter_mut().filter(|p| p.flat.is_some_and(|f| f.picture) || (p.fps - fps).abs() > 0.01) {
         p.rate = Some(fps);
         p.fps = fps;
     }

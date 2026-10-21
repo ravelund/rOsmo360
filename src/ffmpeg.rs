@@ -324,6 +324,22 @@ impl Out {
         if self.picture { Hwaccel::Software } else { hw }
     }
 
+    /// For a stream of frames at another rate: each output frame takes the
+    /// source frame nearest its time, counted from the first one after the
+    /// seek, as frames are timed (start + n / fps). ffmpeg's `-r` took
+    /// frames about 4 early going from 100 to 30 fps (40 ms: the picture
+    /// ran ahead of the attitude, tilting the steadied view a few degrees
+    /// in fast turns) and drifted going up from the 25 fps proxy; the `fps`
+    /// filter alone keeps the last frame in each slot, 1-2 late. Shifting
+    /// by half a source frame and rounding up makes the last in each slot
+    /// the nearest. After any hardware download: before it, VA-API froze
+    /// (the filter holds frames from its small surface pool).
+    fn retime(&self, filters: &mut Vec<String>) {
+        if let Some(rate) = self.rate.filter(|_| !self.picture) {
+            filters.push(format!("setpts=PTS-STARTPTS-0.5/FRAME_RATE/TB,fps={rate}:round=up:start_time=0"));
+        }
+    }
+
     /// For a stream of frames: a picture's one frame repeated at the rate
     /// (30 fps without one), decoded and scaled only once.
     fn repeat(&self, filters: &mut Vec<String>) {
@@ -409,11 +425,6 @@ impl Out {
         rgb
     }
 
-    fn output_args(&self, cmd: &mut Command) {
-        if let Some(r) = self.rate {
-            cmd.args(["-r", &r.to_string()]);
-        }
-    }
 }
 
 pub fn has_audio(input: &Path) -> Result<bool> {
@@ -538,11 +549,12 @@ pub fn yuv(input: &Path, track: u32, start: f64, out: Out, hw: Hwaccel, deep: bo
     if let Some(name) = hw.name() {
         cmd.args(["-hwaccel", name, "-hwaccel_output_format", hw.output_format().unwrap_or(name)]);
         if hw == Hwaccel::Cuda && out.size.is_none() {
-            filters.push(format!("scale_cuda=format={format},hwdownload"));
+            filters.push(format!("scale_cuda=format={format},hwdownload,format={format}"));
         } else {
             filters.push(format!("hwdownload,format={}", if ten_bit { "p010le" } else { "nv12" }));
         }
     }
+    out.retime(&mut filters);
     out.filters(&mut filters);
     out.repeat(&mut filters);
     out.yuv_filters(&mut filters);
@@ -551,7 +563,6 @@ pub fn yuv(input: &Path, track: u32, start: f64, out: Out, hw: Hwaccel, deep: bo
     out.seek(&mut cmd, start);
     cmd.arg("-i").arg(input);
     cmd.args(["-map", &format!("0:v:{track}"), "-vf", &filters.join(",")]);
-    out.output_args(&mut cmd);
     Ok((cmd, deep))
 }
 
@@ -670,11 +681,8 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(input: &Path, track: u32, start: f64, hw: Hwaccel) -> Result<Self> {
-        Self::with(input, track, start, hw, dimensions(input, track)?, Out::default())
-    }
-
-    /// `new` delivered as `out` says, which comes out `(width, height)`.
+    /// Decodes `track` of `input` from `start`, delivered as `out` says,
+    /// which comes out `(width, height)`.
     pub fn with(input: &Path, track: u32, start: f64, hw: Hwaccel, (width, height): (usize, usize), out: Out) -> Result<Self> {
         let mut cmd = tool("ffmpeg");
         cmd.args(["-v", "error"]);
@@ -683,6 +691,7 @@ impl Decoder {
         }
         out.input_args(&mut cmd);
         let mut filters = Vec::new();
+        out.retime(&mut filters);
         out.filters(&mut filters);
         out.rgb_filters(&mut filters);
         out.repeat(&mut filters);
@@ -691,7 +700,6 @@ impl Decoder {
         if !filters.is_empty() {
             cmd.args(["-vf", &filters.join(",")]);
         }
-        out.output_args(&mut cmd);
         let mut child = cmd
             .args(["-f", "rawvideo", "-pix_fmt", out.rgb_format(), "-"])
             .stdout(Stdio::piped())
