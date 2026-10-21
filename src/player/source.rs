@@ -111,7 +111,7 @@ impl Frame {
             Layout::PerTrack => (self.pictures.get(track as usize)?, 0.0),
         };
         let cell = if self.layout == Layout::SideBySide { pic.height } else { pic.width } as f64;
-        let s = cell / lens.calib_dim[0] as f64;
+        let s = cell / (lens.calib_dim[0] as f64 * lens.calib_to_picture.a[0][0]); // picture width, see stitch.rs
         let (x, y) = ((s * u + off_x) as i64, (s * v) as i64);
         if x < 0 || y < 0 || x >= pic.width as i64 || y >= pic.height as i64 {
             return None;
@@ -187,7 +187,9 @@ pub fn spawn(kind: Kind, hw: Hwaccel, start: f64, fps: f64) -> Result<Stream> {
             // on one to four threads, and starts in 0.15 s where setting up
             // Vulkan or CUDA takes 0.5-1 s, which made every scrub lag.
             let (w, h) = dims(path, 0)?;
-            let (child, deep) = decode(path, 0, start, None, Hwaccel::Software)?;
+            // The LRF is 25 fps while `pump` stamps frames at the clip's rate (100 fps on some
+            // clips), so repeat its frames up to that rate.
+            let (child, deep) = decode(path, 0, start, None, Hwaccel::Software, Some(fps))?;
             vec![(child, w, h, deep)]
         }
         Kind::Osv { path, tracks, size } => {
@@ -195,7 +197,7 @@ pub fn spawn(kind: Kind, hw: Hwaccel, start: f64, fps: f64) -> Result<Stream> {
                 .iter()
                 .map(|&t| {
                     let (w, h) = size.map_or_else(|| dims(path, t), |s| Ok((s, s)))?;
-                    let (child, deep) = decode(path, t, start, *size, hw)?;
+                    let (child, deep) = decode(path, t, start, *size, hw, Some(fps))?;
                     Ok((child, w, h, deep))
                 })
                 .collect::<Result<_>>()?
@@ -273,7 +275,7 @@ pub fn still(path: &Path, tracks: &[u32], t: f64, size: Option<u32>, hw: Hwaccel
         .map(|&track| {
             let (w, h) = size.map_or_else(|| dims(path, track), |s| Ok((s, s)))?;
             let read = |hw| -> Result<(Vec<u8>, bool)> {
-                let (mut child, deep) = decode(path, track, t, size, hw)?;
+                let (mut child, deep) = decode(path, track, t, size, hw, None)?;
                 let mut data = vec![0; Picture::bytes(w, h, deep)];
                 let read = child.stdout.take().unwrap().read_exact(&mut data);
                 // Reaped even when the read failed, or it lingers a zombie.
@@ -309,8 +311,8 @@ pub fn still_flat(path: &Path, flat: ffmpeg::Flat, t: f64, hw: Hwaccel) -> Resul
 }
 
 /// A lens track's decoder, and whether it delivers P010.
-fn decode(path: &Path, track: u32, start: f64, size: Option<u32>, hw: Hwaccel) -> Result<(Child, bool)> {
-    let (mut cmd, deep) = ffmpeg::yuv(path, track, start, ffmpeg::Out { size: size.map(|s| (s, s)), ..Default::default() }, hw, deep())?;
+fn decode(path: &Path, track: u32, start: f64, size: Option<u32>, hw: Hwaccel, rate: Option<f64>) -> Result<(Child, bool)> {
+    let (mut cmd, deep) = ffmpeg::yuv(path, track, start, ffmpeg::Out { size: size.map(|s| (s, s)), rate, ..Default::default() }, hw, deep())?;
     cmd.args(["-f", "rawvideo", "-"]).stdout(Stdio::piped()).stderr(Stdio::piped());
     Ok((cmd.spawn().context("running ffmpeg")?, deep))
 }
