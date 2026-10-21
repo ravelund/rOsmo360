@@ -56,7 +56,7 @@ On an Apple Silicon Mac, rOsmo360 can be built from source for now; see the [REA
 
 ### What you need
 
-- Clips from the Osmo 360 (`.OSV`). Copy the `.LRF` file that the camera records next to each clip as well. It's a small preview version, and rOsmo360 uses it for smooth playback, scrubbing and thumbnails.
+- Clips from the Osmo 360 (`.OSV`), in any of its video modes, 100 fps included. Copy the `.LRF` file that the camera records next to each clip as well. It's a small preview version, and rOsmo360 uses it for smooth playback, scrubbing and thumbnails.
 - If you like, ordinary videos and photos to mix in: MP4, MOV, MKV and the like, and JPG, PNG, WebP, BMP or TIFF (see [Ordinary videos and photos](#ordinary-videos-and-photos)).
 - A GPU with up-to-date drivers (Vulkan on Linux, Metal on a Mac). It decodes the video, draws the view and renders exports.
 
@@ -72,7 +72,7 @@ The first clip starts playing as soon as it has loaded; the others load behind i
 
 ## 2. The window
 
-![The rOsmo360 editor: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and underneath the timeline: a Text and an Overlay lane, four cuts with crossfades between them, their keyframe rows, the seek bar and a soundtrack lane with its waveform](guide/editor.jpg)
+![The rOsmo360 editor: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and underneath the transport row, the view angles (Yaw 20, Pitch 4, Roll 0, FOV 70, Correction 0) and the timeline: a Text and an Overlay lane, four cuts with crossfades between them, their keyframe rows, the seek bar and a soundtrack lane with its waveform](guide/editor.jpg)
 
 From top to bottom:
 
@@ -86,7 +86,7 @@ From top to bottom:
 
    On the right are the **audio meter** (see [The audio meter](#the-audio-meter)), **fullscreen** (corners) and two dimmed icons that say what you're seeing (a film strip for the quick preview version, a picture for the full video, an hourglass while a sharp paused frame loads) and how the video is decoded (a lightning bolt when the GPU does it). Messages, such as where an export went, appear beside them.
 
-2. **The view**, where you look around, with panels either side when you open them (see below).
+2. **The view**, where you look around, with panels either side when you open them (see below). The thin bar under it, with a short grip in the middle, shares the window between the picture and the timeline: drag it up to make the timeline's thumbnails and waveforms bigger, down to give the picture more room. Double-click it to put it back. The size is remembered between runs.
 
 3. **The transport row**: play, photos, the time, the view's keyframes, the cut tools, timeline zoom, and sound.
 
@@ -94,7 +94,9 @@ From top to bottom:
 
    After the eyedropper come the **FOV** slider (the zoom) and **reset view** (a turn-back arrow), then **Effects** (three sliders; opens the [Effects panel](#10-effects-colour-opacity-and-fades)) and **crossfade** (two overlapping frames; see [Crossfades](#8-crossfades)). The **speaker** on the right opens the [Audio panel](#9-music-and-sound); it shows a cross while muted.
 
-4. **The timeline**, from the top: the **Text** lane and the **Overlay** lane (once they have something in them, each with its own keyframe rows), the cuts of your edit with thumbnails, their **Effects** and **View** keyframe rows, the seek bar, and the music lane.
+4. **The view angles**: the view as numbers, for typing a framing in exactly (see [Typing the view](#typing-the-view)). Settings can hide this row.
+
+5. **The timeline**, from the top: the **Text** lane and the **Overlay** lane (once they have something in them, each with its own keyframe rows), the cuts of your edit with thumbnails, their **Effects** and **View** keyframe rows, the seek bar, and the music lane.
 
    ![The timeline: a teal title block on the Text lane and an orange logo block on the Overlay lane, each with Effects and Motion rows; four cuts with thumbnails and labels such as "0045 · 12.0 s" and "0026 · 10.0 s · world lock", crossed boxes where cuts crossfade and a light-blue sound line; the Effects and View rows with keyframe marks; the seek bar; and a green soundtrack lane with its waveform and an orange volume line](guide/timeline.png)
 
@@ -147,7 +149,7 @@ Press **P**, or use the **Projection** picker in the top bar, to switch between 
 
 **Equirect** shows the whole sphere flat, as a 2:1 map. It's useful for seeing everything that's around at once.
 
-Perspective and little planet are one family. A keyframed move can morph smoothly from one into the other (see [keyframes](#7-keyframes-moving-the-camera)).
+Perspective and little planet are one family. A keyframed move can morph smoothly from one into the other (see [keyframes](#7-keyframes-moving-the-camera)), and **Correction** in the [view angles](#typing-the-view) sets any mix of the two: 0 is perspective, 1 the little planet's mapping, and in between a wide view whose edges bend a little. Pointed at the horizon, a high correction gives a very wide, fisheye-like shot rather than a planet; at the same FOV, 1 shows twice as much as 0. The Projection picker sets it back to its own value.
 
 ## 5. Stabilisation
 
@@ -213,7 +215,7 @@ When zoomed in, a scrollbar appears under the seek bar. Drag it, use Shift+scrol
 
 ## 7. Keyframes: moving the camera
 
-A **keyframe** remembers a view at a moment of a cut: where it looks (yaw, pitch, roll), the zoom, and the projection. Between keyframes the view moves smoothly from one to the next. That's how you make pans, slow zooms and morphs into a little planet.
+A **keyframe** remembers a view at a moment of a cut: where it looks (yaw, pitch, roll), the zoom, and the projection with its correction. Between keyframes the view moves smoothly from one to the next. That's how you make pans, slow zooms and morphs into a little planet.
 
 1. Go to the moment where the move should start, and frame the view.
 2. Press **K**, or the diamond-with-a-plus icon. A mark appears in the cut's **View** row, under its thumbnails.
@@ -235,6 +237,24 @@ More:
 **Framing a cut by hand keeps it.** Look around in a cut that has no keyframes of its own, and it keeps that view: as soon as you play, seek or go to another cut, the cut gets a keyframe of what you framed at its start (Ctrl+Z takes it away). So it never changes another cut's view, and the export and the saved project frame it as you left it. Ordinary videos and photos keep their own framing apart from Osmo cuts.
 
 Keyframes belong to their cut and stay pinned to the footage. Moving or trimming a cut keeps its camera moves on the same moments. Keyframes trimmed off the end are kept for when you extend the cut again.
+
+### Typing the view
+
+The row under the transport row shows the view as numbers and follows it as it moves:
+
+![The view angles under the transport row: Yaw, Pitch, Roll, FOV and Correction, each with a number field, and the Zoom readout](guide/view-angles.png)
+
+- **Yaw** turns right, in degrees. Past a full turn it also shows as turns × degrees (373.7 is 1 × 13.7°), as a keyframed spin can go round more than once.
+- **Pitch** looks up, **Roll** tilts clockwise.
+- **FOV** is the zoom: degrees from the top of the picture to the bottom.
+- **Correction** bends perspective towards the little planet (see [Projections](#4-projections)).
+- **Zoom** (greyed) is a readout of how wide the picture is from side to side, which a high correction makes much wider than the FOV.
+
+To change one, type a number and press Enter, or **drag its name sideways** (about a degree per 4 pixels), or scroll on its field or use ↑ / ↓ while typing in it. Hold **Shift** for steps ten times finer. A change works as looking around does: with **Auto keyframe** on and the video paused it keys the view at the playhead (each edit one undo step); otherwise press **K** to keep it.
+
+It's the way to give several cuts exactly the same framing: with the camera mounted the same way in each clip, type the same numbers. On an ordinary video or photo the row shows the framing within the picture instead: **Across %** and **Down %** (where the view's centre is, in % of the picture's height from the middle), **Zoom %** (100% shows the whole height) and **Roll**.
+
+While a keyframe follows the stick or a colour track, the numbers are the view as it is on screen; keying it keeps the following.
 
 ### Ease: how a keyframe moves on
 
@@ -503,12 +523,13 @@ Both are rendered from fresh full-resolution frames, which takes a few seconds.
 
 Click the **cog** at the far left of the top bar, or press **Ctrl+,**, for the **Settings panel** at the left of the view. Everything in it is remembered between runs.
 
-![The Settings panel: Look, with the theme picker on Kanagawa Dragon; Decoding, with the 10-bit switch; LUTs, with DJI Osmo 360 D-Log M to Rec.709 V1 in the library, the Add LUT… button and the LUT for D-Log M clips; Keyframes, with the Auto keyframe switch; each with a short note](guide/settings-panel.png)
+![The Settings panel: Look, with the theme picker on Kanagawa Dragon; Decoding, with the 10-bit switch; LUTs, with DJI Osmo 360 D-Log M to Rec.709 V1 in the library, the Add LUT… button and the LUT for D-Log M clips; Keyframes, with the Auto keyframe switch; View angles, with the Show the view as numbers switch; each with a short note](guide/settings-panel.png)
 
 - **Look**: the colour theme. rOsmo360 starts in **Kanagawa Dragon**, a dark theme that keeps the picture in front; the list has light and dark themes such as Nord, Dracula, Gruvbox, Catppuccin and Tokyo Night, and the change shows at once.
 - **Decoding → 10-bit**: decodes the Osmo's `.OSV` and other 10-bit video (a phone's HDR) with all its 10 bits instead of 8. Skies and smooth gradients stay smoother, most of all after strong grading, in the player's full-resolution frames and in exports. It moves twice the data, so a full-resolution export takes about a third longer on a PC; playing from the `.LRF` proxy isn't affected. Off by default; it applies from the next seek or clip.
 - **LUTs**: the LUT library. **Add LUT…** adds a `.cube` file, the **✕** beside one takes it out, and **For D-Log M clips** chooses the one clips filmed in D-Log M get when they're added. See [LUTs and D-Log M](#luts-and-d-log-m).
 - **Keyframes → Auto keyframe**: looking around while paused sets the view's keyframe at the playhead, or updates the one there, as **K** does, so every framing you settle on is kept. Each look-around (from pressing the mouse to letting go) is one undo step. While playing, looking around stays free, as without it. Off by default.
+- **View angles → Show the view as numbers**: the [view angles](#typing-the-view) row under the transport row. On by default; turn it off for a cleaner window.
 
 The ✕ at the top closes the panel.
 
@@ -519,7 +540,7 @@ The ✕ at the top closes the panel.
 | Space | Play / pause |
 | ← / → | Seek 5 seconds |
 | `,` / `.` | Step one frame back / forward (paused) |
-| ↑ / ↓ | Look up / down |
+| ↑ / ↓ | Look up / down (typing in a view angle: nudge it) |
 | Shift+← / → | Look left / right |
 | Q / E | Roll left / right |
 | `+` / `-` | Zoom in / out |
@@ -550,7 +571,7 @@ The ✕ at the top closes the panel.
 
 With the mouse: drag in the view to look around, right-drag to roll, scroll to zoom. On the timeline, click to seek, click a keyframe mark to jump to it, drag any mark (view, effects or motion) to retime it, right-click a cut, song or picture for its file information, drag a cut to move it or its edges to trim it, and scroll to zoom. **Shift**-drag a cut's left edge to set its crossfade, or a song onto its neighbour to crossfade them; **Ctrl**-click a cut or the music lane to add a volume point. Paused, drag a selected title or overlay in the view to move it, a corner to size it and the knob above it to turn it.
 
-Keys only work while you're not typing: in the Text panel's box, the keys type.
+Keys only work while you're not typing: in the Text panel's box or a view angle, the keys type.
 
 ## 18. Tips and troubleshooting
 
@@ -567,7 +588,7 @@ Keys only work while you're not typing: in the Text panel's box, the keys type.
 - **A cut shows as filmed and the player says a LUT is missing.** The project names a LUT this computer's library doesn't have, such as one added on another machine. Add the same `.cube` file in Settings; keep its file name, as that's the LUT's name.
 - **A phone video looks washed out.** rOsmo360 converts HDR (HLG and HDR10) by itself; if a video still looks flat, it may lack the HDR tags its colours need. Exposure, contrast and saturation in the Effects panel can lift it.
 - **Full-resolution playback stutters with 10-bit on.** Turn **10-bit** off in Settings, or play from the proxy; exports aren't affected either way.
-- **Your settings** (stabilisation, playback source, rolling shutter, full res when paused, volume and mute, the export's options, aspect, theme, 10-bit, Auto keyframe and the LUT for D-Log M clips) are remembered between runs, and your LUTs stay in the library.
+- **Your settings** (stabilisation, playback source, rolling shutter, full res when paused, volume and mute, the export's options, aspect, theme, 10-bit, Auto keyframe, the LUT for D-Log M clips, the view angles row and how tall the timeline is) are remembered between runs, and your LUTs stay in the library.
 
 ---
 

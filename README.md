@@ -2,7 +2,7 @@
 
 A 360° video player and editor for **DJI Osmo 360** footage, written in Rust. It plays the camera's `.OSV` files directly: it stitches the two fisheye lenses, stabilises with the camera's gyro data and lets you look around freely, without going through DJI Studio. Then you can cut clips together on a timeline, with ordinary videos and photos beside them, keyframe the camera's view, add crossfades, music, colour effects, titles and logos, and export a framed video.
 
-![rOsmo360 editing a mountain hike: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and below it the timeline: a text lane and an overlay lane, cuts from four clips with crossfades, thumbnails and keyframe rows, and a soundtrack lane with its waveform and volume line](docs/screenshot.png)
+![rOsmo360 editing a mountain hike: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and below it the view angles and the timeline: a text lane and an overlay lane, cuts from four clips with crossfades, thumbnails and keyframe rows, and a soundtrack lane with its waveform and volume line](docs/screenshot.png)
 
 **New here? Read the [user guide](docs/user-guide.md)**: the whole app, step by step, with screenshots.
 
@@ -28,8 +28,9 @@ I vibed this tool primarily for Linux, since I couldn't find anything close to D
   - **Horizon**: a level horizon that follows where you point the camera.
   - **Level**: a level horizon that stays pointing one way in the world while the camera turns.
   - **World lock**: the view stays fixed in the world, tilt included.
-- **Free look**: drag to look around, scroll to zoom, and roll the view.
-- **Projections**: little planet (the default, like DJI Studio), perspective and flat equirectangular.
+- **Free look**: drag to look around, scroll to zoom, and roll the view, or type the view's yaw, pitch, roll and field of view (or drag their names) to frame shots exactly alike.
+- **Projections**: little planet (the default, like DJI Studio), perspective and flat equirectangular, and a **correction** that bends perspective any way towards the little planet, for wide shots.
+- **Every video mode** of the Osmo 360, 100 fps included.
 - **Smooth playback** from the low-resolution proxy (`.LRF`), switching to the full-resolution frame when paused. On a fast GPU, or an Apple Silicon Mac, it can stream the full-resolution `.OSV` directly.
 - **Hardware decoding** on any GPU vendor: Vulkan Video, VA-API or CUDA on Linux, VideoToolbox on a Mac, with a software fallback.
 - **10-bit decoding** (a setting) keeps the Osmo's full 10 bits, for smoother skies and room to grade.
@@ -42,9 +43,9 @@ I vibed this tool primarily for Linux, since I couldn't find anything close to D
 
 ### Editing
 
-- **Timeline** of cuts from one or more clips: split, trim, move and delete them, with undo and redo. Each cut shows thumbnails of its footage, its keyframes sit in rows under it, and the timeline zooms in for fine work.
+- **Timeline** of cuts from one or more clips: split, trim, move and delete them, with undo and redo. Each cut shows thumbnails of its footage, its keyframes sit in rows under it, and the timeline zooms in for fine work. Drag the bar above it to give it, or the picture, more room.
 - **Ordinary videos and photos** as cuts beside the Osmo clips: MP4, MOV and the like from a phone, a drone or an action camera (any frame rate, portrait too, and a phone's HDR, brought to normal colours by itself), and JPG, PNG, WebP and other pictures. They work like any cut, framed by pan and zoom keyframes, so a slow push-in over a photo comes free.
-- **Keyframes** for the view: where it looks (yaw, pitch, roll), the zoom, and the projection, so a shot can pan, zoom or morph into a little planet. Each keyframe eases into the next smoothly, at a steady speed, or holds and then cuts. With Auto keyframe on, framing the view while paused keys it by itself. Every kind of keyframe mark drags along the timeline to retime it.
+- **Keyframes** for the view: where it looks (yaw, pitch, roll), the zoom, and the projection with its correction, so a shot can pan, zoom or morph into a little planet. Each keyframe eases into the next smoothly, at a steady speed, or holds and then cuts. With Auto keyframe on, framing the view while paused keys it by itself. Every kind of keyframe mark drags along the timeline to retime it.
 - **Follow the stick**: a keyframe can follow the selfie stick, and so whoever holds it, for a third-person shot that frames you automatically. It works from the camera's motion data, even straight below the camera.
 - **Follow a subject by colour**: `rosmo360 track` finds a coloured subject (a friend's jacket, a tent) through a clip, and keyframes can follow it the same way.
 - **Stabilisation per cut**: one cut world-locked, the next following the horizon.
@@ -129,9 +130,11 @@ In the player:
 | Stabilisation (of the playing cut) / projection | S / P, or the pickers in the top bar |
 | Rolling-shutter correction | R, or the Effects panel |
 | Mute / volume | M / the speaker opens the Audio panel |
-| Settings: theme, 10-bit decoding, Auto keyframe | The cog at the top left, or Ctrl+, |
+| Settings: theme, 10-bit decoding, Auto keyframe, the view angles row | The cog at the top left, or Ctrl+, |
 | What a file is and where it lives | Right-click its cut, song or picture on the timeline: the Info panel, with show in folder and copy path |
 | Reset view / fullscreen | 0 / F |
+| Type the view | The row under the transport row: Yaw, Pitch, Roll, FOV and Correction (Enter sets one; drag a name sideways, scroll or ↑ / ↓ on a field to nudge it, Shift for finer); Settings can hide it |
+| More room for the timeline or the picture | Drag the bar between the view and the transport row; double-click puts it back |
 | Keyframe the current view | K, or the ◆+ button (on a keyframe, it updates it) |
 | Jump to the previous / next keyframe | `[` / `]`, or click a ◆ in the cut's View row |
 | Move / delete a keyframe | Drag its mark (view, effects or motion) / Delete |
@@ -269,7 +272,7 @@ rosmo360 export edit.json --format resolve -o edit.mov       # 10-bit DNxHR HQX 
 
 `--format resolve` exists because DaVinci Resolve's free version on Linux reads neither H.264/H.265 nor AAC. DNxHR is an editing format, so the files are large: about 28 MB a second at 1080p. Exports decode at 8 bits unless `ROSMO360_10BIT=1` is set, the command line's version of the player's 10-bit setting; MP4s are dithered down to 8 bits either way.
 
-`t` is the clip time in seconds; `projection` is `perspective`, `little-planet` or `equirect`; `ease` (how a keyframe moves on to the next) is `smooth` (the default), `linear` or `hold`. Perspective and little planet morph smoothly into each other.
+`t` is the clip time in seconds; `projection` is `perspective`, `little-planet` or `equirect`; `correction` (0–1) bends the mapping from perspective (0) to the little planet's (1), and defaults to the projection's own; `ease` (how a keyframe moves on to the next) is `smooth` (the default), `linear` or `hold`. Perspective and little planet morph smoothly into each other.
 
 Instead of `yaw` and `pitch`, a keyframe can say `"follow": "stick"`: it then looks along the selfie stick, at whoever holds it, plus `offset_yaw` and `offset_pitch` (degrees). For a third-person shot from above and behind, try `{"t": 30, "follow": "stick", "offset_pitch": 25, "fov": 100}`. Following carries on to the next keyframes until one gives its own `yaw` and `pitch`.
 
