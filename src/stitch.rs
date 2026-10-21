@@ -112,7 +112,9 @@ impl Lens {
     /// be a scaled-down copy (the LRF proxy) of the full-size picture.
     pub(crate) fn sample(&self, frames: &[Frame], u: f64, v: f64) -> [f64; 3] {
         let f = &frames[self.input];
-        let s = f.width as f64 / self.calib_dim[0] as f64;
+        // The picture may be a scaled copy of calib_dim (1920 px lenses: calib_to_picture 0.5), so scale
+        // against the picture's width, not the calibration's.
+        let s = f.width as f64 / (self.calib_dim[0] as f64 * self.calib_to_picture.a[0][0]);
         sample(f, u * s, v * s)
     }
 }

@@ -247,7 +247,7 @@ pub fn flat(input: &Path) -> Result<Option<Flat>> {
         if f.get(3) == Some(&"1") {
             continue;
         }
-        if *codec == "hevc" && w == h && w >= 2000 {
+        if *codec == "hevc" && w == h && w >= 1500 { // 100 fps mode records 1920×1920 lenses
             lenses += 1;
         }
         first.get_or_insert((i as u32, (w, h)));

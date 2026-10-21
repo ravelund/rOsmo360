@@ -604,7 +604,7 @@ impl Layer {
                 Layout::PerTrack => (track as usize, &frame.pictures[track as usize]),
             };
             let cell = if frame.layout == Layout::SideBySide { pic.height } else { pic.width } as f64;
-            let s = cell / lens.calib_dim[0] as f64;
+            let s = cell / (lens.calib_dim[0] as f64 * lens.calib_to_picture.a[0][0]); // picture width, see stitch.rs
             let off_x = if frame.layout == Layout::SideBySide { track as f64 * cell } else { 0.0 };
             let (w, h) = (pic.width as f64, pic.height as f64);
             let a = &lens.calib_to_picture;
