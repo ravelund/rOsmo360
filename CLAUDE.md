@@ -1,5 +1,7 @@
 # rOsmo360
 
+> Contributors and their agents: read `AGENTS.md` instead. This file is the maintainer's working notes, with paths and footage you won't have.
+
 A Rust/Linux replacement for DJI Studio's playback of DJI Osmo 360 `.OSV` footage: correct dual-fisheye stitching, gyro stabilisation, rolling-shutter correction and free-look playback. The goal is to get as close to DJI Studio as possible without its proprietary pieces (AI tracking, its denoise, flow-based seam refinement).
 
 The tool is called **rOsmo360** (the r is for its Rust core); the window title, app id and `--help` use that name. The crate and binary are `rosmo360` (renamed from `osmo360` on 2026-10-10).
