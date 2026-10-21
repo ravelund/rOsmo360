@@ -20,6 +20,7 @@ mod thumbs;
 mod effects;
 pub mod music;
 mod timeline;
+mod divider;
 
 use crate::ffmpeg::{self, Hwaccel};
 use crate::stab::{ImuAxes, Mode, Stabilizer};
@@ -312,6 +313,12 @@ enum Message {
     /// Open or close the Settings panel.
     SettingsPanel,
     AutoKey(bool),
+    /// The divider above the transport row is this many pixels below
+    /// where it was pressed (the lanes shrink), was let go, or was
+    /// double-clicked (back to 1).
+    SplitDrag(f32),
+    SplitDone,
+    SplitReset,
     Theme(Theme),
     TenBit(bool),
     /// Add a `.cube` to the LUT library (a file dialog), the file picked,
@@ -576,6 +583,11 @@ struct App {
     /// look-around there is one undo step; `None` once it's over (the mouse
     /// let go, or anything else done).
     auto_key_at: Option<(usize, f64)>,
+    /// The timeline lanes' scale as the divider has it now, and as last let
+    /// go, which is what's saved: a drag would otherwise write the settings
+    /// file at every step.
+    split: f32,
+    split_kept: f32,
     /// The Settings panel is open (at the left).
     settings_open: bool,
     /// 10-bit tracks decode at 10 bits (`source::deep`).
@@ -667,6 +679,8 @@ impl App {
             full_on_pause: saved.full_on_pause,
             auto_key: saved.auto_key,
             auto_key_at: None,
+            split: saved.timeline_scale,
+            split_kept: saved.timeline_scale,
             settings_open: false,
             fullscreen: false,
             volume: saved.volume,
@@ -704,6 +718,7 @@ impl App {
             theme: self.theme.to_string(),
             ten_bit: self.ten_bit,
             dlog_m_lut: self.dlog_m_lut.clone(),
+            timeline_scale: self.split_kept,
         }
     }
 
@@ -1562,6 +1577,9 @@ impl App {
                 }
             }
             Message::AutoKey(on) => self.auto_key = on,
+            Message::SplitDrag(dy) => self.split = (self.split_kept - dy / timeline::SCALABLE).clamp(*timeline::SCALES.start(), *timeline::SCALES.end()),
+            Message::SplitDone => self.split_kept = self.split,
+            Message::SplitReset => (self.split, self.split_kept) = (1.0, 1.0),
             Message::TenBit(on) => {
                 self.ten_bit = on;
                 source::set_deep(on);
@@ -3326,6 +3344,7 @@ impl App {
             overlays: self.overlay_blocks(crate::overlay::Track::Overlay),
             texts: self.overlay_blocks(crate::overlay::Track::Text),
             selected_overlay: self.selected_overlay,
+            rows: timeline::Rows::new(self.split),
         }
         .view();
         // With a song selected, C splits that instead.
@@ -3427,7 +3446,12 @@ impl App {
         .align_y(Alignment::Center);
 
         let timeline = container(timeline).padding([2, 10]);
-        column![top, view, transport, timeline].push(error.map(|e| container(e).padding([0, 10]))).push(credit()).into()
+        let divider = tip(
+            canvas(divider::Divider).width(Length::Fill).height(divider::HEIGHT),
+            text("Drag to give the timeline or the picture more room (double-click: as it was)"),
+            tooltip::Position::Top,
+        );
+        column![top, view, divider, transport, timeline].push(error.map(|e| container(e).padding([0, 10]))).push(credit()).into()
     }
 }
 
