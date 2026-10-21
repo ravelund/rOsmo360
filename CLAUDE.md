@@ -275,6 +275,7 @@ Runtime dependencies: `ffmpeg` and `ffprobe` CLIs (bundled ones beside the binar
   - 2× `djmd` (protobuf, schema `dvtm_oq101.proto`),
   - 2× `dbgi`,
   - an MJPEG thumbnail.
+- The 100 fps mode records 1920×1920 lens tracks with a 25 fps LRF (PR #5 from a user, dogsled69wallet, merged 2026-10-21; we have no such footage): `ffmpeg::flat` counts square HEVC from 1500 px as lenses; the calibration stays at 3840 (`calib_dim`) with `calib_to_picture` 0.5, so the samplers scale by the picture's width (`calib_dim × a[0][0]`), not `calib_dim`; every proxy and OSV decode is resampled to the clip's rate (`Out::rate`; frames are timed n / fps), the CPU path's too (47a25d2). On 3840 clips all of it is byte-identical to before. Their idea for later: an output frame rate option (100 fps clips rendered at 30, ~3× faster).
 - `.LRF` is a 2048×1024 H.264 proxy. It is not stitched: left half = OSV track 0 and right half = OSV track 1, each the full circle scaled to 1024² with no offset (checked by image difference).
 
 ### Calibration
