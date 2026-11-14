@@ -519,7 +519,7 @@ Pause, then:
 - **Save view** (the camera icon) saves what you see as a PNG, 3840 px on the long side, in the aspect lock's shape.
 - **Save 360°** (the globe icon) saves the whole sphere as a 7680 × 3840 equirectangular PNG. Most photo sites and viewers that support 360° photos can show it.
 
-Both are rendered from fresh full-resolution frames, which takes a few seconds.
+Both are rendered from fresh full-resolution frames, which takes a few seconds. **Save view** has the cut's LUT and effects, as the screen shows it; **Save 360°** is the sphere as filmed.
 
 ## 16. Settings
 
@@ -581,7 +581,7 @@ Keys only work while you're not typing: in the Text panel's box or a view angle,
 - **Playback stutters.** Use the **Proxy (LRF)** source; it needs far less than the full `.OSV`, and through a crossfade the player decodes two cuts at once. Ordinary videos play at up to 1920 px whatever the source says. If a clip has no `.LRF`, copy it from the camera's card; DJI records one next to every clip. Footage on an SSD plays and scrubs more smoothly than on a spinning disk or a network drive.
 - **Clips open slowly the first time.** That's rOsmo360 reading the camera's motion data; the second time the clip opens almost at once. To have a whole card ready before you start, see [the clip cache](#20-the-clip-cache).
 - **The paused picture keeps changing sharpness.** Turn off **Full res** in the top bar while keyframing.
-- **Something close to the camera looks doubled or cut at the edges.** That's the seam where the two lenses meet. rOsmo360 lines up close subjects and cuts cleanly where it can't, but a hand or face very close to the seam can still show it, most of all next to the selfie stick, where the two lenses overlap least. Turn the view so close subjects sit away from the sides of the camera.
+- **Something close to the camera looks doubled or cut at the edges.** That's the seam where the two lenses meet. rOsmo360 lines up close subjects and cuts cleanly where it can't, but a hand or face very close to the seam can still show it, most of all next to the selfie stick, where the two lenses overlap least. Turn the view so close subjects sit away from the sides of the camera. The **Fine seam alignment** test feature in [Settings](#16-settings) can sharpen such edges a little.
 - **"World lock" starts tilted.** It holds the clip's first orientation. Use **Level** instead: it holds the direction but keeps the horizon level.
 - **No sound.** Check the speaker icon isn't showing muted (mute is remembered between runs); the Audio panel has the volume. On Linux, sound goes through ALSA, which PipeWire and PulseAudio both provide.
 - **Export says it's stitching on the CPU.** No usable GPU was found, so it falls back to the slower CPU stitcher. Update your GPU drivers. The result looks the same.
@@ -591,7 +591,7 @@ Keys only work while you're not typing: in the Text panel's box or a view angle,
 - **A cut shows as filmed and the player says a LUT is missing.** The project names a LUT this computer's library doesn't have, such as one added on another machine. Add the same `.cube` file in Settings; keep its file name, as that's the LUT's name.
 - **A phone video looks washed out.** rOsmo360 converts HDR (HLG and HDR10) by itself; if a video still looks flat, it may lack the HDR tags its colours need. Exposure, contrast and saturation in the Effects panel can lift it.
 - **Full-resolution playback stutters with 10-bit on.** Turn **10-bit** off in Settings, or play from the proxy; exports aren't affected either way.
-- **Your settings** (stabilisation, playback source, rolling shutter, full res when paused, volume and mute, the export's options, aspect, theme, 10-bit, Auto keyframe, the LUT for D-Log M clips, the view angles row and how tall the timeline is) are remembered between runs, and your LUTs stay in the library.
+- **Your settings** (stabilisation, playback source, rolling shutter, full res when paused, volume and mute, the export's options, aspect, theme, 10-bit, Auto keyframe, the LUT for D-Log M clips, the view angles row, the test features and how tall the timeline is) are remembered between runs, and your LUTs stay in the library.
 
 ---
 
