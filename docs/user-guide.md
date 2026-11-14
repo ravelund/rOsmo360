@@ -525,7 +525,7 @@ Both are rendered from fresh full-resolution frames, which takes a few seconds. 
 
 Click the **cog** at the far left of the top bar, or press **Ctrl+,**, for the **Settings panel** at the left of the view. Everything in it is remembered between runs.
 
-![The Settings panel: Look, with the theme picker on Kanagawa Dragon; Decoding, with the 10-bit switch; LUTs, with DJI Osmo 360 D-Log M to Rec.709 V1 in the library, the Add LUT… button and the LUT for D-Log M clips; Keyframes, with the Auto keyframe switch; View angles, with the Show the view as numbers switch; each with a short note](guide/settings-panel.png)
+![The Settings panel: Look, with the theme picker on Kanagawa Dragon; Decoding, with the 10-bit switch; LUTs, with DJI Osmo 360 D-Log M to Rec.709 V1 in the library, the Add LUT… button and the LUT for D-Log M clips; Keyframes, with the Auto keyframe switch; View angles, with the Show the view as numbers switch; Test features, with the Fine seam alignment switch; each with a short note](guide/settings-panel.png)
 
 - **Look**: the colour theme. rOsmo360 starts in **Kanagawa Dragon**, a dark theme that keeps the picture in front; the list has light and dark themes such as Nord, Dracula, Gruvbox, Catppuccin and Tokyo Night, and the change shows at once.
 - **Decoding → 10-bit**: decodes the Osmo's `.OSV` and other 10-bit video (a phone's HDR) with all its 10 bits instead of 8. Skies and smooth gradients stay smoother, most of all after strong grading, in the player's full-resolution frames and in exports. It moves twice the data, so a full-resolution export takes about a third longer on a PC; playing from the `.LRF` proxy isn't affected. Off by default; it applies from the next seek or clip.
