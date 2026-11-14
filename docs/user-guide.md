@@ -532,6 +532,7 @@ Click the **cog** at the far left of the top bar, or press **Ctrl+,**, for the *
 - **LUTs**: the LUT library. **Add LUT…** adds a `.cube` file, the **✕** beside one takes it out, and **For D-Log M clips** chooses the one clips filmed in D-Log M get when they're added. See [LUTs and D-Log M](#luts-and-d-log-m).
 - **Keyframes → Auto keyframe**: looking around while paused sets the view's keyframe at the playhead, or updates the one there, as **K** does, so every framing you settle on is kept. Each look-around (from pressing the mouse to letting go) is one undo step. While playing, looking around stays free, as without it. Off by default.
 - **View angles → Show the view as numbers**: the [view angles](#typing-the-view) row under the transport row. On by default; turn it off for a cleaner window.
+- **Test features → Fine seam alignment**: an experiment, off by default. It lines the two lenses up at the seam on a much finer grid, so something close to the camera and what's behind it each get their own shift. Edges of close subjects at the seam can come out a little sharper; straight edges very near the camera (inside a car) can bend. In most footage it makes no visible difference. It applies to playback and to exports, from the next frame.
 
 The ✕ at the top closes the panel.
 

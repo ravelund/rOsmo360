@@ -11,7 +11,7 @@
 
 use super::source::{Frame, Layout};
 use crate::hdr::Hdr;
-use crate::align::{Aligner, CELLS_ALPHA, CELLS_PHI, Field, Strips};
+use crate::align::{Aligner, CELLS_ALPHA, CELLS_PHI, FLOW_ALPHA, FLOW_PHI, Field, Strips};
 use crate::exposure::{self, BINS, FADE_FROM, FADE_TO, Gains, Seam};
 use crate::grade::Grade;
 use crate::overlay::{Picture, Place, Quad};
@@ -78,7 +78,8 @@ struct Uniforms {
     misc: [f32; 4],
     lenses: [LensU; 2],
     views: [[f32; 4]; RS_STEPS_MAX * 3],
-    /// Exposure seam basis rows; .w of the first two are the fade angles.
+    /// Exposure seam basis rows; .w of the first two are the fade angles,
+    /// of the third 1 where the shifts come from the fine field's texture.
     seam: [[f32; 4]; 3],
     gains: [[f32; 4]; BINS * 2],
     /// Seam alignment shifts, four cells per vector.
@@ -277,6 +278,9 @@ struct Layer {
     /// The LUT as a 3D texture, and which loaded one (`lut::shared`) it is.
     lut: Plane,
     lut_id: Option<usize>,
+    /// The fine seam field (`align::flow`), a shift per texel, read by hand
+    /// in the shader: 32-bit floats don't filter without a device feature.
+    flow: Plane,
     bind_group: wgpu::BindGroup,
     lens_u: [LensU; 2],
     rig_id: u64,
@@ -346,6 +350,12 @@ impl Pipeline {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -398,8 +408,9 @@ impl Pipeline {
             let deep = [0, 1].map(|_| deep_planes(device, 2, 2));
             let masks = [0, 1].map(|_| plane(device, 1, 1, wgpu::TextureFormat::R8Unorm));
             let lut = lut_texture(device, 2);
-            let bind_group = bind(device, &layout, &uniforms, &sampler, &slots, &deep, &masks, &lut);
-            Layer { uniforms, slots, deep, masks, lut, lut_id: None, bind_group, lens_u: [LensU::zeroed(); 2], rig_id: 0, shown_id: 0 }
+            let flow = plane(device, FLOW_PHI as u32, FLOW_ALPHA as u32, wgpu::TextureFormat::R32Float);
+            let bind_group = bind(device, &layout, &uniforms, &sampler, &slots, &deep, &masks, &lut, &flow);
+            Layer { uniforms, slots, deep, masks, lut, lut_id: None, flow, bind_group, lens_u: [LensU::zeroed(); 2], rig_id: 0, shown_id: 0 }
         });
         let (overlay, overlay_layout) = overlay_pipeline(device, format);
         Pipeline { pipeline, blend, layout, sampler, srgb: format.is_srgb(), layers, mix: None, overlay, overlay_layout, overlay_slots: Vec::new(), overlays: 0, dither: None }
@@ -482,7 +493,7 @@ impl Pipeline {
             if l.lut_id != Some(id) {
                 l.lut = upload_lut(device, queue, &lut);
                 l.lut_id = Some(id);
-                l.bind_group = bind(device, layout, &l.uniforms, sampler, &l.slots, &l.deep, &l.masks, &l.lut);
+                l.bind_group = bind(device, layout, &l.uniforms, sampler, &l.slots, &l.deep, &l.masks, &l.lut, &l.flow);
             }
             let (lo, hi) = lut.domain;
             u.lut = [[1.0, camera.grade.lut.clamp(0.0, 1.0) as f32, lut.size as f32, 0.0], [lo[0], lo[1], lo[2], 0.0], [hi[0], hi[1], hi[2], 0.0]];
@@ -510,9 +521,15 @@ impl Pipeline {
                 u.gains[lens * BINS + b] = [g[0], g[1], g[2], 0.0];
             }
         }
-        for (v, cells) in u.field.iter_mut().zip(shown.fix.field.shift.chunks_exact(4)) {
-            v.copy_from_slice(cells);
+        let field = &shown.fix.field;
+        if field.fine() {
+            write(queue, &l.flow.texture, bytemuck::cast_slice(&field.shift), FLOW_PHI as u32, FLOW_ALPHA as u32, 4);
+        } else {
+            for (v, cells) in u.field.iter_mut().zip(field.shift.chunks_exact(4)) {
+                v.copy_from_slice(cells);
+            }
         }
+        u.seam[2][3] = field.fine() as u8 as f32;
         for (v, bins) in u.cut.iter_mut().zip(shown.fix.field.cut.chunks_exact(4)) {
             v.copy_from_slice(bins);
         }
@@ -559,7 +576,7 @@ impl Layer {
         if rig.flat {
             self.masks = [0, 1].map(|_| plane(device, 1, 1, wgpu::TextureFormat::R8Unorm));
             self.lens_u = [LensU::zeroed(); 2];
-            self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut);
+            self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut, &self.flow);
             self.rig_id = rig.id;
             self.shown_id = 0;
             return;
@@ -572,7 +589,7 @@ impl Layer {
             p
         });
         self.lens_u = [0, 1].map(|i| lens_uniform(&rig.lenses[i]));
-        self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut);
+        self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut, &self.flow);
         self.rig_id = rig.id;
         self.shown_id = 0;
     }
@@ -596,7 +613,7 @@ impl Layer {
             write(queue, &uv.texture, pic.uv(), cw, ch, 2 * bytes);
         }
         if rebind {
-            self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut);
+            self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut, &self.flow);
         }
         for (i, lens) in rig.lenses.iter().enumerate().take(2) {
             let track = rig.tracks[lens.input];
@@ -752,6 +769,7 @@ fn bind(
     deep: &[(Plane, Plane); 2],
     masks: &[Plane; 2],
     lut: &Plane,
+    flow: &Plane,
 ) -> wgpu::BindGroup {
     fn tex(binding: u32, p: &Plane) -> wgpu::BindGroupEntry<'_> {
         wgpu::BindGroupEntry { binding, resource: wgpu::BindingResource::TextureView(&p.view) }
@@ -773,6 +791,7 @@ fn bind(
             tex(10, &deep[1].0),
             tex(11, &deep[1].1),
             tex(12, lut),
+            tex(13, flow),
         ],
     })
 }

@@ -76,9 +76,25 @@ const CUT_DETAIL_FULL: f64 = 0.02;
 const CUT_AGREE_FROM: f64 = 0.3;
 const CUT_AGREE_FULL: f64 = 0.6;
 
+/// With `Aligner::flow`, the field is measured again on a grid this fine,
+/// each cell searching this far (strip rows per lens) around the coarse
+/// field's shift there with a patch this small, so a close subject and the
+/// landscape behind it in one coarse cell each get their own shift.
+pub const FLOW_PHI: usize = 512;
+pub const FLOW_ALPHA: usize = 31;
+const FLOW_REACH: isize = 6;
+const FLOW_PATCH_W: isize = 4;
+const FLOW_PATCH_H: isize = 4;
+/// Cost per degree a fine cell leaves the coarse field by, and how much it
+/// must gain to leave it at all.
+const FLOW_PRIOR: f64 = 0.05;
+const FLOW_MARGIN: f64 = 0.03;
+
 /// The seam correction measured on one frame.
 #[derive(Clone, Debug)]
 pub struct Field {
+    /// Cells around the ring and rows of them across the seam.
+    pub dims: (usize, usize),
     /// δ in radians per cell: how much further from lens 0's axis lens 1
     /// sees the content at that output angle.
     pub shift: Vec<f32>,
@@ -88,12 +104,16 @@ pub struct Field {
 
 impl Default for Field {
     fn default() -> Self {
-        Field { shift: vec![0.0; CELLS_PHI * CELLS_ALPHA], cut: vec![1.0; CELLS_PHI] }
+        Field { dims: (CELLS_PHI, CELLS_ALPHA), shift: vec![0.0; CELLS_PHI * CELLS_ALPHA], cut: vec![1.0; CELLS_PHI] }
     }
 }
 
 impl Field {
     pub fn ease(&mut self, to: &Field, k: f32) {
+        if self.dims != to.dims {
+            *self = to.clone();
+            return;
+        }
         for (a, b) in self.shift.iter_mut().zip(&to.shift).chain(self.cut.iter_mut().zip(&to.cut)) {
             *a += (b - *a) * k;
         }
@@ -107,15 +127,21 @@ impl Field {
         v(x0) * (1.0 - f) + v(x0 + 1.0) * f
     }
 
+    /// Whether it's the fine grid's (`FLOW_PHI` × `FLOW_ALPHA`).
+    pub fn fine(&self) -> bool {
+        self.dims == (FLOW_PHI, FLOW_ALPHA)
+    }
+
     /// Bilinear in cells, wrapping round the ring and clamped across it.
     fn at(&self, phi: f64, alpha_deg: f64) -> f64 {
-        let x = phi / TAU * CELLS_PHI as f64 - 0.5;
-        let y = ((alpha_deg - CELL_ALPHA_LO) / (CELL_ALPHA_HI - CELL_ALPHA_LO) * (CELLS_ALPHA - 1) as f64).clamp(0.0, (CELLS_ALPHA - 1) as f64);
+        let (w, h) = self.dims;
+        let x = phi / TAU * w as f64 - 0.5;
+        let y = ((alpha_deg - CELL_ALPHA_LO) / (CELL_ALPHA_HI - CELL_ALPHA_LO) * (h - 1) as f64).clamp(0.0, (h - 1) as f64);
         let (x0, y0) = (x.floor(), y.floor());
         let (fx, fy) = (x - x0, y - y0);
-        let col = |i: f64| (i as isize).rem_euclid(CELLS_PHI as isize) as usize;
-        let row = |j: f64| (j as usize).min(CELLS_ALPHA - 1);
-        let v = |i: f64, j: f64| self.shift[row(j) * CELLS_PHI + col(i)] as f64;
+        let col = |i: f64| (i as isize).rem_euclid(w as isize) as usize;
+        let row = |j: f64| (j as usize).min(h - 1);
+        let v = |i: f64, j: f64| self.shift[row(j) * w + col(i)] as f64;
         let top = v(x0, y0) * (1.0 - fx) + v(x0 + 1.0, y0) * fx;
         let bot = v(x0, y0 + 1.0) * (1.0 - fx) + v(x0 + 1.0, y0 + 1.0) * fx;
         top * (1.0 - fy) + bot * fy
@@ -143,6 +169,19 @@ impl Strips {
         let (a, b) = (s[y0 as usize * STRIP_W + x] as f64, s[(y0 as usize + 1) * STRIP_W + x] as f64);
         a + (b - a) * (y - y0)
     }
+}
+
+/// Whether fields are measured on the fine grid too: `--flow`, or the
+/// player's test setting. One switch for the process, as the player's
+/// export runs in it.
+static FLOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_flow(on: bool) {
+    FLOW.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn flow() -> bool {
+    FLOW.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub struct Aligner {
@@ -175,10 +214,40 @@ impl Aligner {
     /// frame before, when this one follows on from it.
     pub fn measure(&self, strips: &Strips, prev: Option<&Field>) -> Field {
         let detail = [highpass(&strips.0[0], DETAIL_RADIUS), highpass(&strips.0[1], DETAIL_RADIUS)];
-        let mut shift: Vec<f32> =
-            (0..CELLS_PHI * CELLS_ALPHA).into_par_iter().map(|c| match_cell(&detail, c % CELLS_PHI, c / CELLS_PHI, prev.map(|p| p.shift[c]))).collect();
-        fill_and_smooth(&mut shift);
-        let field = Field { shift, cut: Vec::new() };
+        // A cell's centre on the ring, and on the strip.
+        let centre = |c: usize, (w, h): (usize, usize)| {
+            let phi = ((c % w) as f64 + 0.5) / w as f64 * TAU;
+            let alpha = CELL_ALPHA_LO + (c / w) as f64 * (CELL_ALPHA_HI - CELL_ALPHA_LO) / (h - 1) as f64;
+            (phi, alpha, (((c % w) as f64 + 0.5) * (STRIP_W / w) as f64) as isize, ((alpha - STRIP_ALPHA_LO) / STRIP_STEP).round() as isize)
+        };
+        let coarse = (CELLS_PHI, CELLS_ALPHA);
+        let mut shift: Vec<f32> = (0..CELLS_PHI * CELLS_ALPHA)
+            .into_par_iter()
+            .map(|c| {
+                let (phi, alpha, x0, y0) = centre(c, coarse);
+                let search = Search { patch: (PATCH_W, PATCH_H), rest: 0.0, reach: MAX_HALF, prior: DISTANCE_PRIOR, margin: ZERO_MARGIN };
+                // The cell's own last shift; a fine field's there.
+                match_cell(&detail, x0, y0, &search, prev.map(|p| if p.dims == coarse { p.shift[c] } else { p.at(phi, alpha) as f32 }))
+            })
+            .collect();
+        fill_and_smooth(&mut shift, coarse);
+        let mut field = Field { dims: coarse, shift, cut: Vec::new() };
+        if flow() {
+            let fine = (FLOW_PHI, FLOW_ALPHA);
+            let mut shift: Vec<f32> = (0..FLOW_PHI * FLOW_ALPHA)
+                .into_par_iter()
+                .map(|c| {
+                    let (phi, alpha, x0, y0) = centre(c, fine);
+                    let rest = field.at(phi, alpha);
+                    let search = Search { patch: (FLOW_PATCH_W, FLOW_PATCH_H), rest, reach: FLOW_REACH, prior: FLOW_PRIOR, margin: FLOW_MARGIN };
+                    // Where the patch says nothing, the coarse field's.
+                    let found = match_cell(&detail, x0, y0, &search, prev.map(|p| if p.dims == fine { p.shift[c] } else { p.at(phi, alpha) as f32 }));
+                    if found.is_nan() { rest as f32 } else { found }
+                })
+                .collect();
+            fill_and_smooth(&mut shift, fine);
+            field = Field { dims: fine, shift, cut: Vec::new() };
+        }
         let cut = (0..CELLS_PHI).map(|b| cut_strength(&detail, &field, b)).collect();
         Field { cut, ..field }
     }
@@ -198,15 +267,17 @@ impl Aligner {
         gray("diff_none.png", &|x, y| 4.0 * strips.disagreement(&none, x, y))?;
         gray("diff_aligned.png", &|x, y| 4.0 * strips.disagreement(field, x, y))?;
         let k = 8;
-        let rgb: Vec<u8> = (0..CELLS_ALPHA * k)
-            .flat_map(|y| (0..CELLS_PHI * k).map(move |x| (x / k, y / k)))
+        let (w, h) = field.dims;
+        let k = k * CELLS_PHI / w;
+        let rgb: Vec<u8> = (0..h * k)
+            .flat_map(|y| (0..w * k).map(move |x| (x / k, y / k)))
             .flat_map(|(cx, cy)| {
-                let d = (field.shift[cy * CELLS_PHI + cx] as f64).to_degrees() / 6.0;
+                let d = (field.shift[cy * w + cx] as f64).to_degrees() / 6.0;
                 let v = (d.abs().min(1.0) * 255.0) as u8;
                 if d > 0.0 { [v, 0, 0] } else { [0, 0, v] }
             })
             .collect();
-        image::save_buffer(dir.join("field.png"), &rgb, (CELLS_PHI * k) as u32, (CELLS_ALPHA * k) as u32, image::ColorType::Rgb8)?;
+        image::save_buffer(dir.join("field.png"), &rgb, (w * k) as u32, (h * k) as u32, image::ColorType::Rgb8)?;
         Ok(())
     }
 
@@ -261,22 +332,37 @@ impl Aligner {
 /// Best shift for one cell by zero-mean normalised cross-correlation, which
 /// ignores any brightness difference left between the lenses. NaN where the
 /// patch has too little texture or overlap to say.
-fn match_cell(strips: &[Vec<f32>; 2], cx: usize, cy: usize, prev: Option<f32>) -> f32 {
-    let x0 = ((cx as f64 + 0.5) * (STRIP_W / CELLS_PHI) as f64) as isize;
-    let alpha = CELL_ALPHA_LO + cy as f64 * (CELL_ALPHA_HI - CELL_ALPHA_LO) / (CELLS_ALPHA - 1) as f64;
-    let y0 = ((alpha - STRIP_ALPHA_LO) / STRIP_STEP).round() as isize;
+/// How a cell is matched: its patch's half-size (columns, rows), the shift
+/// it rests at (radians) with the cost per degree away from it and how
+/// much another shift must beat it by, and how far around it to look (strip
+/// rows per lens).
+struct Search {
+    patch: (isize, isize),
+    rest: f64,
+    reach: isize,
+    prior: f64,
+    margin: f64,
+}
+
+/// (The cell is centred on strip pixel `x0`, `y0`.)
+fn match_cell(strips: &[Vec<f32>; 2], x0: isize, y0: isize, search: &Search, prev: Option<f32>) -> f32 {
+    let (patch_w, patch_h) = search.patch;
+    let rest_deg = search.rest.to_degrees();
+    // The rows nearest the resting shift, and the search around them.
+    let k_rest = ((rest_deg / (2.0 * STRIP_STEP)).round() as isize).clamp(-MAX_HALF, MAX_HALF);
+    let (k_lo, k_hi) = ((k_rest - search.reach).max(-MAX_HALF), (k_rest + search.reach).min(MAX_HALF));
     let px = |s: &Vec<f32>, x: isize, y: isize| -> f32 {
         if y < 0 || y >= STRIP_H as isize {
             return f32::NAN;
         }
         s[y as usize * STRIP_W + x.rem_euclid(STRIP_W as isize) as usize]
     };
-    let full = ((2 * PATCH_W + 1) * (2 * PATCH_H + 1)) as f64;
-    let mut costs = Vec::with_capacity((2 * MAX_HALF + 1) as usize);
-    for k in -MAX_HALF..=MAX_HALF {
+    let full = ((2 * patch_w + 1) * (2 * patch_h + 1)) as f64;
+    let mut costs = Vec::with_capacity((k_hi - k_lo + 1) as usize);
+    for k in k_lo..=k_hi {
         let (mut n, mut sa, mut sb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        for j in -PATCH_H..=PATCH_H {
-            for i in -PATCH_W..=PATCH_W {
+        for j in -patch_h..=patch_h {
+            for i in -patch_w..=patch_w {
                 let a = px(&strips[0], x0 + i, y0 + j - k) as f64;
                 let b = px(&strips[1], x0 + i, y0 + j + k) as f64;
                 if a.is_nan() || b.is_nan() {
@@ -304,7 +390,7 @@ fn match_cell(strips: &[Vec<f32>; 2], cx: usize, cy: usize, prev: Option<f32>) -
         let ncc = (sab / n - sa / n * sb / n) / (va * vb).sqrt();
         let shift_deg = 2.0 * k as f64 * STRIP_STEP;
         let temporal = prev.map_or(0.0, |p| TEMPORAL * (shift_deg - (p as f64).to_degrees()).abs());
-        costs.push(1.0 - ncc + DISTANCE_PRIOR * shift_deg.abs() + temporal);
+        costs.push(1.0 - ncc + search.prior * (shift_deg - rest_deg).abs() + temporal);
     }
     let Some((best, &c)) = costs.iter().enumerate().filter(|(_, c)| !c.is_nan()).min_by(|a, b| a.1.total_cmp(b.1)) else {
         return f32::NAN;
@@ -313,15 +399,15 @@ fn match_cell(strips: &[Vec<f32>; 2], cx: usize, cy: usize, prev: Option<f32>) -
     if c > 0.5 {
         return f32::NAN;
     }
-    // A shift has to beat no shift clearly, or smooth sky drifts.
-    if let Some(&c0) = costs.get(MAX_HALF as usize)
+    // A shift has to beat the resting one clearly, or smooth sky drifts.
+    if let Some(&c0) = costs.get((k_rest - k_lo) as usize)
         && !c0.is_nan()
-        && c0 - c < ZERO_MARGIN
+        && c0 - c < search.margin
     {
-        return 0.0;
+        return search.rest as f32;
     }
     // Sub-row refinement from the neighbouring costs.
-    let mut k = best as f64 - MAX_HALF as f64;
+    let mut k = (best as isize + k_lo) as f64;
     if best > 0 && best + 1 < costs.len() && !costs[best - 1].is_nan() && !costs[best + 1].is_nan() {
         let (l, r) = (costs[best - 1], costs[best + 1]);
         let den = l - 2.0 * c + r;
@@ -413,15 +499,15 @@ fn highpass(s: &[f32], r: isize) -> Vec<f32> {
 /// Fills unmeasured cells from their neighbours (or zero, the calibration's
 /// own alignment), then takes a 3×3 median and a light blur so one bad
 /// match can't tear the picture.
-fn fill_and_smooth(cells: &mut [f32]) {
-    let idx = |x: isize, y: isize| y.clamp(0, CELLS_ALPHA as isize - 1) as usize * CELLS_PHI + x.rem_euclid(CELLS_PHI as isize) as usize;
-    for _ in 0..CELLS_PHI {
+fn fill_and_smooth(cells: &mut [f32], (w, h): (usize, usize)) {
+    let idx = |x: isize, y: isize| y.clamp(0, h as isize - 1) as usize * w + x.rem_euclid(w as isize) as usize;
+    for _ in 0..w {
         if !cells.iter().any(|c| c.is_nan()) {
             break;
         }
         let prev = cells.to_vec();
-        for y in 0..CELLS_ALPHA as isize {
-            for x in 0..CELLS_PHI as isize {
+        for y in 0..h as isize {
+            for x in 0..w as isize {
                 if !prev[idx(x, y)].is_nan() {
                     continue;
                 }
@@ -436,16 +522,16 @@ fn fill_and_smooth(cells: &mut [f32]) {
         *c = 0.0;
     }
     let prev = cells.to_vec();
-    for y in 0..CELLS_ALPHA as isize {
-        for x in 0..CELLS_PHI as isize {
+    for y in 0..h as isize {
+        for x in 0..w as isize {
             let mut n: Vec<f32> = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (dx, dy))).map(|(dx, dy)| prev[idx(x + dx, y + dy)]).collect();
             n.sort_by(f32::total_cmp);
             cells[idx(x, y)] = n[4];
         }
     }
     let prev = cells.to_vec();
-    for y in 0..CELLS_ALPHA as isize {
-        for x in 0..CELLS_PHI as isize {
+    for y in 0..h as isize {
+        for x in 0..w as isize {
             cells[idx(x, y)] = 0.25 * prev[idx(x - 1, y)] + 0.5 * prev[idx(x, y)] + 0.25 * prev[idx(x + 1, y)];
         }
     }

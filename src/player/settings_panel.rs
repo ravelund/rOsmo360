@@ -83,6 +83,13 @@ impl App {
                 note("A strip under the transport row with the yaw, pitch, roll, FOV and correction: type one, or drag its name sideways, to set it as dragging the view would; scroll or ↑ ↓ on a field nudges it, Shift for finer steps. Handy for giving clips from a camera mounted the same way the same framing."),
             ]
             .spacing(6),
+            rule::horizontal(1),
+            text("Test features").size(15),
+            column![
+                toggler(self.fine_seam).label("Fine seam alignment").on_toggle(Message::FineSeam),
+                note("Lines the lenses up at the seam on a much finer grid, so something close and what's behind it each get their own shift. Edges of close subjects come out sharper; straight edges very near the camera (inside a car) can bend. For playback and export, from the next frame."),
+            ]
+            .spacing(6),
         ]
         .spacing(12)
         .padding(12);

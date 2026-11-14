@@ -83,6 +83,8 @@ const TAPER_WIDTH: f32 = 12.0;
 @group(0) @binding(10) var y1d: texture_2d<u32>;
 @group(0) @binding(11) var uv1d: texture_2d<u32>;
 @group(0) @binding(12) var lut3d: texture_3d<f32>;
+// The fine seam field (align.rs `flow`), a shift per texel.
+@group(0) @binding(13) var flow: texture_2d<f32>;
 
 const PI: f32 = 3.14159265358979;
 
@@ -261,6 +263,33 @@ fn field_cell(x: i32, y: u32) -> f32 {
     return u.field[c / 4u][c % 4u];
 }
 
+fn flow_cell(x: i32, y: i32, size: vec2i) -> f32 {
+    return textureLoad(flow, vec2i((x + size.x) % size.x, min(y, size.y - 1)), 0).r;
+}
+
+// The shift at (phi, a degrees): Field::at in align.rs, on the coarse cells
+// or the fine field's texture.
+fn field_at(phi: f32, a: f32) -> f32 {
+    let fine = u.seam[2].w > 0.5;
+    let size = select(vec2i(i32(CELLS_PHI), i32(CELLS_ALPHA)), vec2i(textureDimensions(flow)), fine);
+    let x = fract(phi / (2.0 * PI) + 1.0) * f32(size.x) - 0.5;
+    let y = clamp((a - CELL_ALPHA_LO) / (CELL_ALPHA_HI - CELL_ALPHA_LO) * f32(size.y - 1), 0.0, f32(size.y - 1));
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let fx = x - x0;
+    let fy = y - y0;
+    let xi = i32(x0);
+    let yi = i32(y0);
+    if fine {
+        let top = mix(flow_cell(xi, yi, size), flow_cell(xi + 1, yi, size), fx);
+        let bot = mix(flow_cell(xi, yi + 1, size), flow_cell(xi + 1, yi + 1, size), fx);
+        return mix(top, bot, fy);
+    }
+    let top = mix(field_cell(xi, u32(yi)), field_cell(xi + 1, u32(yi)), fx);
+    let bot = mix(field_cell(xi, u32(yi) + 1u), field_cell(xi + 1, u32(yi) + 1u), fx);
+    return mix(top, bot, fy);
+}
+
 // Matches Aligner::warp in align.rs: where lens `lens` looks for output
 // direction `d`.
 fn align_warp(lens: u32, d: vec3f) -> vec3f {
@@ -273,17 +302,7 @@ fn align_warp(lens: u32, d: vec3f) -> vec3f {
         return d;
     }
     let phi = atan2(dot(d, u.seam[2].xyz), dot(d, u.seam[1].xyz));
-    let x = fract(phi / (2.0 * PI) + 1.0) * f32(CELLS_PHI) - 0.5;
-    let y = clamp((a - CELL_ALPHA_LO) / (CELL_ALPHA_HI - CELL_ALPHA_LO) * f32(CELLS_ALPHA - 1u), 0.0, f32(CELLS_ALPHA - 1u));
-    let x0 = floor(x);
-    let y0 = floor(y);
-    let fx = x - x0;
-    let fy = y - y0;
-    let xi = i32(x0);
-    let yi = u32(y0);
-    let top = mix(field_cell(xi, yi), field_cell(xi + 1, yi), fx);
-    let bot = mix(field_cell(xi, yi + 1u), field_cell(xi + 1, yi + 1u), fx);
-    let half = 0.5 * mix(top, bot, fy) * taper;
+    let half = 0.5 * field_at(phi, a) * taper;
     let shifted = select(alpha + half, alpha - half, lens == 0u);
     let ring = vec3f(cos(phi) * u.seam[1].xyz + sin(phi) * u.seam[2].xyz);
     return cos(shifted) * axis + sin(shifted) * ring;

@@ -128,6 +128,9 @@ enum Cmd {
         /// as images into this directory.
         #[arg(long)]
         dump: Option<PathBuf>,
+        /// Score the fine field (`--flow`) instead.
+        #[arg(long)]
+        flow: bool,
     },
     /// Stitch a span of the clip to an equirectangular MP4.
     Render {
@@ -520,6 +523,11 @@ struct StitchOpts {
     /// Blend everywhere instead of cutting where the lenses disagree.
     #[arg(long)]
     no_cut: bool,
+    /// Align the seam on a fine grid too (512 × 31 cells over the coarse
+    /// 128 × 7), so a close subject and what's behind it each get their own
+    /// shift. Experimental.
+    #[arg(long)]
+    flow: bool,
     /// Give each lens the other's video track. Which track a lens was
     /// recorded to isn't in the clip (telemetry-parser goes by the camera
     /// model), and swapped back-to-back lenses still stitch cleanly, only
@@ -542,6 +550,7 @@ impl Default for StitchOpts {
             exposure: false,
             no_align: false,
             no_cut: false,
+            flow: false,
             swap_lenses: false,
         }
     }
@@ -632,6 +641,9 @@ impl Pipeline {
         let rs_steps = if opts.no_rs || readout_ms == 0.0 || !stab.has_data() { 1 } else { 33 };
         let seam = if opts.exposure && opts.only.is_none() { exposure::Seam::new(&lenses) } else { None };
         let aligner = if opts.no_align || opts.only.is_some() { None } else { align::Aligner::new(&lenses) };
+        if opts.flow {
+            align::set_flow(true);
+        }
         let hw = ffmpeg::Hwaccel::pick(input, tracks[0])?;
         Ok(Pipeline {
             input: input.to_owned(),
@@ -1183,7 +1195,7 @@ fn run() -> Result<()> {
         Cmd::Play { input, osv_size, hwaccel, stabilize, imu_axes, world_z_down } => {
             player::run(input, player::Launch { osv_size, hw: hwaccel, stabilize, imu_axes, world_z_down })?;
         }
-        Cmd::Seam { input, start, duration, dump } => needs_360(&input, "a seam").and_then(|_| seam_report(&input, start, duration, dump.as_deref()))?,
+        Cmd::Seam { input, start, duration, dump, flow } => needs_360(&input, "a seam").and_then(|_| seam_report(&input, start, duration, dump.as_deref(), flow))?,
         Cmd::Stitch { input, time, output, width, opts } => {
             let p = Pipeline::new(&input, &opts, stab::Mode::Off)?;
             let time = p.snap(time);
@@ -1724,8 +1736,8 @@ fn skies(input: &Path) -> Result<Vec<(f64, sky::Sky)>> {
     Ok(skies)
 }
 
-fn seam_report(input: &Path, start: f64, duration: f64, dump: Option<&Path>) -> Result<()> {
-    let opts = StitchOpts { no_rs: true, ..StitchOpts::default() };
+fn seam_report(input: &Path, start: f64, duration: f64, dump: Option<&Path>, flow: bool) -> Result<()> {
+    let opts = StitchOpts { no_rs: true, flow, ..StitchOpts::default() };
     let p = Pipeline::new(input, &opts, stab::Mode::Off)?;
     let aligner = p.aligner.as_ref().context("not a two-lens rig")?;
     let start = p.snap(start);
