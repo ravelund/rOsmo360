@@ -125,6 +125,9 @@ impl Open {
 #[derive(Default)]
 pub struct Player {
     open: Vec<Open>,
+    /// When to try the sound device again after it failed: not at every
+    /// frame, as it was.
+    retry: Option<std::time::Instant>,
 }
 
 impl Player {
@@ -148,10 +151,12 @@ impl Player {
             let ready = || old.iter().position(|o| !o.started && o.is(clip));
             let mut open = match in_step.or_else(ready) {
                 Some(k) => old.swap_remove(k),
+                None if self.retry.is_some_and(|at| std::time::Instant::now() < at) => continue,
                 None => match Audio::prepare(&clip.input, want, 0.0) {
                     Ok(audio) => Open { input: clip.input.clone(), at: clip.at, from: want, audio, started: false },
                     Err(e) => {
                         eprintln!("no music: {e:#}");
+                        self.retry = Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
                         continue;
                     }
                 },

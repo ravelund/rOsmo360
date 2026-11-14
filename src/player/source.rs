@@ -69,7 +69,15 @@ impl Drop for Picture {
 impl Picture {
     /// Bytes for a picture of `w` × `h`.
     pub fn bytes(w: u32, h: u32, deep: bool) -> usize {
-        (w * h * 3 / 2) as usize * if deep { 2 } else { 1 }
+        let (cw, ch) = Self::chroma(w, h);
+        (w * h + 2 * cw * ch) as usize * if deep { 2 } else { 1 }
+    }
+    /// The colour plane's size: half the picture's, rounded up as ffmpeg
+    /// does. Rounded down, an odd-sized video or picture came some bytes
+    /// short a frame, so each frame started further into the one before
+    /// (853 × 481 on the GPU: 10.7 dB from the CPU's export).
+    pub fn chroma(w: u32, h: u32) -> (u32, u32) {
+        (w.div_ceil(2), h.div_ceil(2))
     }
     fn split(&self) -> usize {
         (self.width * self.height) as usize * if self.deep { 2 } else { 1 }
@@ -140,7 +148,7 @@ impl Frame {
 /// Y′, Cb and Cr at a pixel, Y′ 0..1 and Cb/Cr about 0, from video range.
 fn ycc(pic: &Picture, x: usize, y: usize) -> [f64; 3] {
     let w = pic.width as usize;
-    let c = (y / 2) * w + (x / 2) * 2;
+    let c = (y / 2) * Picture::chroma(pic.width, pic.height).0 as usize * 2 + (x / 2) * 2;
     [
         (pic.sample(pic.y(), y * w + x) - 16.0 / 255.0) * (255.0 / 219.0),
         (pic.sample(pic.uv(), c) - 128.0 / 255.0) * (255.0 / 224.0),

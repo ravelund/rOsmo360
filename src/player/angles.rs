@@ -283,7 +283,8 @@ impl App {
                 let y = match delta {
                     mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => y,
                 };
-                Message::AngleNudge(angle, y.signum() as f64)
+                // A sideways scroll has no step: `signum` of its 0 is 1.
+                Message::AngleNudge(angle, if y == 0.0 { 0.0 } else { y.signum() as f64 })
             });
             let label = angle.label(flat);
             let name = canvas_widget(Scrub { angle, label }).width(name_width(label)).height(22);

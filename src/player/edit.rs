@@ -165,11 +165,15 @@ impl Edit {
     /// Splits cut `i` at clip time `t`. Both halves keep all its keyframes,
     /// so the view runs on across the split unchanged, and each half can be
     /// reframed on its own from then on.
+    pub fn can_split(&self, i: usize, t: f64) -> bool {
+        self.cuts.get(i).is_some_and(|c| t >= c.start + MIN_CUT && t <= c.end - MIN_CUT)
+    }
+
     pub fn split(&mut self, i: usize, t: f64) -> bool {
-        let c = &self.cuts[i];
-        if t < c.start + MIN_CUT || t > c.end - MIN_CUT {
+        if !self.can_split(i, t) {
             return false;
         }
+        let c = &self.cuts[i];
         let mut second = c.clone();
         second.start = t;
         second.crossfade = 0.0;
@@ -183,10 +187,13 @@ impl Edit {
     /// kept within the clip (`0..clip_len`) and at least `MIN_CUT` long.
     pub fn trim(&mut self, i: usize, start: bool, t: f64, clip_len: f64) {
         let c = &mut self.cuts[i];
+        // Not `clamp`: it panics where the limits cross, as they do for a
+        // cut shorter than `MIN_CUT` (a very short clip, a hand-written
+        // project) or one reaching past its clip's end.
         if start {
-            c.start = t.clamp(0.0, c.end - MIN_CUT);
+            c.start = t.min(c.end - MIN_CUT).max(0.0);
         } else {
-            c.end = t.clamp(c.start + MIN_CUT, clip_len);
+            c.end = t.max(c.start + MIN_CUT).min(clip_len.max(c.start));
         }
         crate::project::settle_crossfades(&mut self.cuts);
     }
@@ -194,7 +201,14 @@ impl Edit {
     /// Sets the crossfade into cut `i`, within what the cuts either side
     /// allow.
     pub fn set_crossfade(&mut self, i: usize, seconds: f64) {
-        let max = crate::project::max_crossfade(&self.cuts, i).max(0.0);
+        let mut max = crate::project::max_crossfade(&self.cuts, i);
+        // Leaving the cut what the next one's crossfade takes of its end,
+        // or three cuts overlapped and the next one's was dropped (and the
+        // edit a second longer) when the project was opened again.
+        if let (Some(c), Some(next)) = (self.cuts.get(i), self.cuts.get(i + 1)) {
+            max = max.min(c.len() - next.crossfade - crate::project::SOLO);
+        }
+        let max = max.max(0.0);
         if let Some(c) = self.cuts.get_mut(i) {
             c.crossfade = seconds.clamp(0.0, max);
         }

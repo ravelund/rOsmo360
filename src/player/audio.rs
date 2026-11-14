@@ -120,14 +120,6 @@ impl Audio {
         let channels = config.channels as usize;
         let rate = config.sample_rate as f64;
 
-        let mut child = crate::ffmpeg::tool("ffmpeg")
-            .args(["-v", "error", "-nostdin", "-ss", &start.to_string(), "-i"])
-            .arg(input)
-            .args(["-map", "0:a:0", "-f", "f32le", "-ac", &channels.to_string(), "-ar", &config.sample_rate.to_string(), "-"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("running ffmpeg")?;
         let shared = Arc::new(Shared {
             samples: Mutex::new(VecDeque::new()),
             played: AtomicU64::new(0),
@@ -138,6 +130,26 @@ impl Audio {
             done: AtomicBool::new(false),
         });
 
+        // The device first: where its stream won't open (busy, an odd
+        // sample format) nothing else has been started. ffmpeg and its
+        // reader came first once, and were left running at every failure,
+        // which the music made again each frame.
+        let stream = match format {
+            SampleFormat::F32 => build::<f32>(&device, &config, shared.clone()),
+            SampleFormat::I16 => build::<i16>(&device, &config, shared.clone()),
+            SampleFormat::I32 => build::<i32>(&device, &config, shared.clone()),
+            SampleFormat::U16 => build::<u16>(&device, &config, shared.clone()),
+            other => bail!("unsupported audio sample format {other}"),
+        }?;
+        stream.play().context("starting audio")?;
+        let mut child = crate::ffmpeg::tool("ffmpeg")
+            .args(["-v", "error", "-nostdin", "-ss", &start.to_string(), "-i"])
+            .arg(input)
+            .args(["-map", "0:a:0", "-f", "f32le", "-ac", &channels.to_string(), "-ar", &config.sample_rate.to_string(), "-"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("running ffmpeg")?;
         let mut out = child.stdout.take().unwrap();
         let reader = shared.clone();
         let ahead = (BUFFER_SECONDS * rate) as usize * channels;
@@ -179,14 +191,6 @@ impl Audio {
             }
         });
 
-        let stream = match format {
-            SampleFormat::F32 => build::<f32>(&device, &config, shared.clone()),
-            SampleFormat::I16 => build::<i16>(&device, &config, shared.clone()),
-            SampleFormat::I32 => build::<i32>(&device, &config, shared.clone()),
-            SampleFormat::U16 => build::<u16>(&device, &config, shared.clone()),
-            other => bail!("unsupported audio sample format {other}"),
-        }?;
-        stream.play().context("starting audio")?;
         Ok(Audio { _stream: stream, child, shared, rate })
     }
 

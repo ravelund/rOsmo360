@@ -923,32 +923,49 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
         Target::One(_) => 0.0,
         Target::Clips { handles, .. } => handles.max(0.0),
     };
-    // Per cut: its clip's pipeline, start (on a frame) and frame count.
-    let mut plan = Vec::with_capacity(project.cuts.len());
-    for (cut, &i) in project.cuts.iter().zip(&of_cut) {
+    let fps = pipelines[0].fps;
+    if pipelines.iter().any(|p| (p.fps - fps).abs() > 0.01) {
+        eprintln!("the clips' frame rates differ; exporting at {fps:.3} fps");
+    }
+    let whole = matches!(out.target, Target::One(_));
+    // Per cut: its clip's pipeline, start (on a frame) and frame count, and
+    // the frames it shares with the cut before: its crossfade, in the whole
+    // edit only (a file per cut is for another editor's own), never more
+    // than either cut has to give.
+    // In the whole edit a cut's frames run from where it starts on the edit
+    // to where it ends, each rounded to a frame, so the cuts stay within
+    // half a frame of the music, overlays and fades, which are placed in
+    // seconds. Each cut rounded on its own, the error added up: at 29.97
+    // fps a 7 s cut is 209.79 frames, written as 210, and so is every
+    // whole-second cut under 16 s.
+    let frame = |t: f64| (t * fps).round() as usize;
+    let mut plan: Vec<(usize, f64, usize)> = Vec::with_capacity(project.cuts.len());
+    let mut overlap = vec![0usize; project.cuts.len()];
+    let mut at = 0.0; // where the cut before ends on the edit
+    for (n, (cut, &i)) in project.cuts.iter().zip(&of_cut).enumerate() {
         let p = &pipelines[i];
         let from = (cut.start - handles).max(0.0);
         let end = (cut.end + handles).min(ffmpeg::duration(&cut.input)?);
         if end <= from {
             bail!("the cut from {} s starts after {} ends", cut.start, cut.input.display());
         }
-        // Count frames over the span asked for, not from the frame the start
-        // snaps to: snapping 14 s forward to 14.014 left `-d 5` at 149 frames.
-        plan.push((i, p.snap(from), ((end - from) * p.fps).round().max(1.0) as usize));
-    }
-    let fps = pipelines[0].fps;
-    if pipelines.iter().any(|p| (p.fps - fps).abs() > 0.01) {
-        eprintln!("the clips' frame rates differ; exporting at {fps:.3} fps");
-    }
-    // Frames each cut shares with the one before: its crossfade, in the
-    // whole edit only (a file per cut is for another editor's own), and
-    // never more than either cut has to give.
-    let mut overlap = vec![0usize; plan.len()];
-    if matches!(out.target, Target::One(_)) {
-        for n in 1..plan.len() {
-            let room = (plan[n - 1].2 - overlap[n - 1]).min(plan[n].2).saturating_sub(1);
-            overlap[n] = ((project.cuts[n].crossfade * fps).round() as usize).min(room);
+        let len = end - from;
+        if !whole {
+            // Count frames over the span asked for, not from the frame the
+            // start snaps to: snapping 14 s forward to 14.014 left `-d 5`
+            // at 149 frames.
+            plan.push((i, p.snap(from), frame(len).max(1)));
+            continue;
         }
+        let mut starts = at;
+        if n > 0 {
+            let room = (plan[n - 1].2 - overlap[n - 1]).min(frame(len).saturating_sub(1)).saturating_sub(1);
+            let asked = frame(at) - frame((at - cut.crossfade.max(0.0)).max(0.0));
+            overlap[n] = asked.min(room);
+            starts = if asked <= room { at - cut.crossfade.max(0.0) } else { (frame(at) - overlap[n]) as f64 / fps };
+        }
+        at = starts + len;
+        plan.push((i, p.snap(from), (frame(at) - frame(starts)).max(overlap[n] + 1)));
     }
     // Each file and the cuts it holds.
     let files: Vec<(PathBuf, std::ops::Range<usize>)> = match &out.target {
@@ -1130,6 +1147,14 @@ fn run() -> Result<()> {
     if cli.no_cache {
         cache::disable();
     }
+    // Sizes and steps nothing can be made of, which used to panic (a width
+    // or tile of 0) or never end (`scan --every 0`).
+    match &cli.cmd {
+        Cmd::Stitch { width, .. } | Cmd::Render { width, .. } if *width < 16 => bail!("--width {width} is too small (16 px or more)"),
+        Cmd::Preview { tile, .. } if *tile < 64 => bail!("--tile {tile} is too small (64 px or more)"),
+        Cmd::Preview { every: Some(every), .. } | Cmd::Scan { every, .. } | Cmd::Track { every, .. } if every.is_nan() || *every <= 0.0 => bail!("--every {every} must be above 0"),
+        _ => {}
+    }
     match cli.cmd {
         Cmd::Cache { action: None } => cache::report()?,
         Cmd::Cache { action: Some(CacheAction::Clear { older_than }) } => cache::clear(older_than)?,
@@ -1167,6 +1192,7 @@ fn run() -> Result<()> {
             eprintln!("wrote {}", output.display());
         }
         Cmd::Render { input, start, duration, output, width, opts } => {
+            needs_360(&input, "sphere to render (use `export`)")?;
             let p = Pipeline::new(&input, &opts, stab::Mode::Off)?;
             let start = p.snap(start);
             let total = duration.map(|d| (d * p.fps).round() as usize);
@@ -1287,6 +1313,9 @@ fn is_project(input: &Path) -> bool {
 /// tiles. Blank tiles fill out the last. Returns the sheet and how many
 /// tiles it shows.
 fn preview_project(project: &project::Project, opts: &StitchOpts, every: Option<f64>, tile: usize, columns: usize, proxy: bool) -> Result<(stitch::Frame, usize)> {
+    if project.cuts.is_empty() {
+        bail!("the project has no cuts to preview");
+    }
     let mut project = project.clone();
     let (pipelines, of_cut) = cut_pipelines(&mut project, opts, proxy)?;
     let project = &project;
@@ -1419,7 +1448,7 @@ fn encode(p: &Pipeline, start: f64, total: Option<usize>, encoder: &mut dyn ffmp
 
 /// Grades a rendered frame on the CPU, as the shader does on the GPU.
 /// Its LUT, then its effects, as the shader's `finish` does on the GPU.
-fn grade_frame(frame: &mut stitch::Frame, camera: &view::Camera) {
+pub(crate) fn grade_frame(frame: &mut stitch::Frame, camera: &view::Camera) {
     let (grade, lut) = (&camera.grade, camera.lut.map(|id| (lut::get(id), camera.grade.lut.clamp(0.0, 1.0))));
     if grade.is_neutral() && lut.is_none() {
         return;

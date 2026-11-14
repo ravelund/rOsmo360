@@ -68,7 +68,7 @@ pub fn make(media: &Media, mut send: impl FnMut(f64, Handle) -> bool) -> anyhow:
             whole = send(t, Handle::from_rgba(w as u32, h as u32, rgba));
             whole
         })?;
-        if whole {
+        if whole && !made.is_empty() {
             cache::store_thumbs(&media.input, SIZE, &made);
         }
         return Ok(());
@@ -92,7 +92,7 @@ pub fn make(media: &Media, mut send: impl FnMut(f64, Handle) -> bool) -> anyhow:
         whole
     })?;
     // Only a whole set: one cut short (the clip closed) would stay short.
-    if whole {
+    if whole && !made.is_empty() {
         cache::store_thumbs(&media.input, SIZE, &made);
     }
     Ok(())

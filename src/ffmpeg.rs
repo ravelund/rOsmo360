@@ -146,7 +146,8 @@ pub fn key_frames(input: &Path, track: u32, (w, h): (usize, usize), out: Out, mu
     let mut child = cmd
         .arg("-i")
         .arg(input)
-        .args(["-map", &format!("0:v:{track}"), "-vf", &filters.join(","), "-fps_mode", "passthrough"])
+        .args(["-map", &format!("0:v:{track}"), "-vf", &filters.join(",")])
+        .args(passthrough())
         .args(["-f", "rawvideo", "-pix_fmt", out.rgb_format(), "-"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -167,23 +168,43 @@ pub fn key_frames(input: &Path, track: u32, (w, h): (usize, usize), out: Out, mu
         }
     });
     let mut stdout = child.stdout.take().unwrap();
-    let result = (|| -> Result<()> {
+    // Whether ffmpeg ran to its end, rather than being told enough.
+    let result = (|| -> Result<bool> {
         loop {
             let mut data = vec![0; w * h * out.rgb_bytes()];
             match stdout.read_exact(&mut data) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(true),
                 Err(e) => return Err(e.into()),
             }
             let t = times.recv().context("ffmpeg gave a frame without its time")?;
             if !each(t, Frame { width: w, height: h, rgb: out.rgb24(data), deep: false }) {
-                return Ok(());
+                return Ok(false);
             }
         }
     })();
-    let _ = child.kill();
-    let _ = child.wait();
-    result
+    if !matches!(result, Ok(true)) {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    // An ffmpeg that failed gave no frames or too few; taken for the end
+    // of the clip, an empty set of thumbnails went into the cache for good.
+    if result? && !status?.success() {
+        bail!("ffmpeg failed reading the keyframes of {}", input.display());
+    }
+    Ok(())
+}
+
+/// The output option that keeps every frame at its own time: `-fps_mode`
+/// from ffmpeg 5.1, `-vsync` before (Ubuntu 22.04 has 4.4, which stops at
+/// `-fps_mode` as an unknown option; newer ones drop `-vsync`).
+fn passthrough() -> [&'static str; 2] {
+    static NEW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let new = *NEW.get_or_init(|| {
+        let help = tool("ffmpeg").args(["-hide_banner", "-h", "long"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        help.map_or(true, |h| String::from_utf8_lossy(&h.stdout).contains("-fps_mode"))
+    });
+    [if new { "-fps_mode" } else { "-vsync" }, "passthrough"]
 }
 
 /// RMS and peak level in dBFS of the first audio stream, per `window`
@@ -840,6 +861,16 @@ impl Sound<'_> {
     }
 }
 
+impl Sound<'_> {
+    /// A filter (led by a comma) that makes the stretch last as long as its
+    /// frames. A clip's sound often ends before its picture (0037's by
+    /// 13 ms), and joined end to end a short stretch brought every later
+    /// cut's sound that much early, adding up over an edit.
+    fn padded(&self) -> String {
+        self.duration.map_or(String::new(), |d| format!(",apad=whole_dur={d}"))
+    }
+}
+
 impl Mix<'_> {
     /// Whether it changes anything.
     fn matters(&self) -> bool {
@@ -885,7 +916,7 @@ impl Encoder {
             cmd.args(["-map", "1:a:0?"]);
         } else if audio.iter().all(Sound::sounds) {
             // Same camera, but resample anyway: concat needs matching formats.
-            let parts: String = (1..=audio.len()).map(|i| format!("[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{i}];")).collect();
+            let parts: String = (1..).zip(audio).map(|(i, s)| format!("[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo{}[a{i}];", s.padded())).collect();
             let inputs: String = (1..=audio.len()).map(|i| format!("[a{i}]")).collect();
             cmd.args(["-filter_complex", &format!("{parts}{inputs}concat=n={}:v=0:a=1[a]", audio.len()), "-map", "[a]"]);
         } else if !audio.is_empty() {
@@ -905,8 +936,10 @@ impl Encoder {
         if frame.deep != self.deep {
             bail!("a {}-bit frame for a {}-bit encoder", if frame.deep { 16 } else { 8 }, if self.deep { 16 } else { 8 });
         }
-        self.stdin.as_mut().unwrap().write_all(&frame.rgb)?;
-        Ok(())
+        // Not passed on as an I/O error: `main` takes a broken pipe for
+        // output closed early (`| head`) and ends quietly, so an encoder
+        // that died (no such folder, a full disk) exited with success.
+        self.stdin.as_mut().unwrap().write_all(&frame.rgb).map_err(|e| anyhow::anyhow!("the ffmpeg encoder stopped ({e}); its own message is above"))
     }
 
     /// Stops encoding, leaving whatever was written.
@@ -956,7 +989,7 @@ fn mixed(cmd: &mut Command, audio: &[Sound<'_>], mix: &Mix<'_>) -> Result<String
         for (i, sound) in (1..).zip(audio) {
             // Its volume points, in clip time: the stretch's time starts at 0.
             let level = if sound.volume.is_empty() { String::new() } else { format!(",{}", level_filter(0.0, sound.volume, &format!("(t+{})", sound.start))) };
-            graph += &format!("[{i}:a:0]{stereo}{level}[c{i}];");
+            graph += &format!("[{i}:a:0]{stereo}{level}{}[c{i}];", sound.padded());
         }
         // Joined in turn: a crossfade overlaps a stretch's end with the
         // next's start (equal power, as the music's), else end to end.

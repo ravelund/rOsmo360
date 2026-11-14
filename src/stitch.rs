@@ -191,7 +191,10 @@ pub fn render(
                 let warp = |d: [f64; 3]| seam.align.map_or(d, |(a, f)| a.warp(f, i, d));
                 let Some(mut hit) = lens.project(warp(mid)) else { continue };
                 if views.len() > 1 {
-                    let row = (hit.1 / lens.calib_dim[1] as f64).clamp(0.0, 1.0);
+                    // Down the picture, which a 100 fps clip's 1920 px has
+                    // at half the calibration's size: over that size its
+                    // rows ran 0 to 0.5, half the readout.
+                    let row = (hit.1 / (lens.calib_dim[1] as f64 * lens.calib_to_picture.a[1][1])).clamp(0.0, 1.0);
                     let at = views[(row * (views.len() - 1) as f64).round() as usize];
                     let Some(h) = lens.project(warp(apply(at, d))) else { continue };
                     hit = h;

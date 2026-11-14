@@ -550,6 +550,9 @@ struct App {
     saved_aspect: Aspect,
     /// What to do once the project has been saved.
     after_save: Option<Then>,
+    /// What counted as saved before "Don't save" on the way to opening
+    /// another project, until one is open.
+    discarded: Option<(u64, Aspect)>,
     /// Quitting once the export or tracking stopped for it has cleaned up.
     closing: bool,
     /// Exports are this many pixels on the short side.
@@ -562,6 +565,8 @@ struct App {
     exporting: Option<(Arc<std::sync::atomic::AtomicBool>, f32)>,
     /// A trim or keyframe drag has saved the edit for undo already.
     dragging: bool,
+    /// The undo step under way is a run of typing in a title.
+    typing: bool,
     /// Timeline zoom (1 shows the whole edit) and the edit time at its left
     /// edge; `timeline_window` keeps them in range.
     timeline_zoom: f64,
@@ -675,6 +680,7 @@ impl App {
             current: 0,
             selected: None,
             dragging: false,
+            typing: false,
             timeline_zoom: 1.0,
             timeline_start: 0.0,
             queue: Default::default(),
@@ -686,6 +692,7 @@ impl App {
             saved_version: 0,
             saved_aspect: Aspect::Free,
             after_save: None,
+            discarded: None,
             closing: false,
             resolution: saved.resolution,
             export_clips: saved.export_clips,
@@ -770,6 +777,13 @@ impl App {
         // A field shows what's typed only while it's being typed.
         if !quiet && !matches!(message, Message::AngleInput(..)) {
             self.angle_draft = None;
+        }
+        // A run of typing in a title is one undo step until something else
+        // is done. It used to last until the next drag ended, so a trim
+        // right after typing joined its step: one undo took both.
+        if self.typing && !quiet && !matches!(message, Message::Effect(effects::EffectMsg::TextEdit(_))) {
+            self.typing = false;
+            self.dragging = false;
         }
         let task = self.handle(message);
         if looking {
@@ -1043,6 +1057,7 @@ impl App {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.exporting = Some((cancel.clone(), 0.0));
         self.save_status = None;
+        self.error = None;
         let work = iced::stream::channel(8, async move |mut output: iced::futures::channel::mpsc::Sender<Message>| {
             let (tx, mut rx) = iced::futures::channel::mpsc::unbounded();
             std::thread::spawn(move || {
@@ -1104,7 +1119,7 @@ impl App {
                     let near = Some(crate::track::Near::Rig(dir));
                     let (found, rows) = crate::track_to(&input, &colour, near, Some(t), Some(end - t), 0.1, &mut file, &mut progress)?;
                     file.flush()?;
-                    Ok::<_, anyhow::Error>(TrackDone { path: path.clone(), cut: i, t, found, rows, colour: hex })
+                    Ok::<_, anyhow::Error>(TrackDone { path: path.clone(), input: input.clone(), cut: i, t, found, rows, colour: hex })
                 })();
                 if result.is_err() {
                     let _ = std::fs::remove_file(&path);
@@ -1122,10 +1137,16 @@ impl App {
 
     /// Makes the keyframe where a finished track starts follow it, with the
     /// subject in the middle of the view.
-    fn follow_track(&mut self, done: TrackDone) {
+    fn follow_track(&mut self, mut done: TrackDone) {
         self.save_status = Some(format!("Tracked {}: found in {} of {} samples", done.colour, done.found, done.rows));
-        if done.cut >= self.edit.cuts.len() {
-            return;
+        // The cut may have moved while it tracked (cuts before it deleted,
+        // moved or split, an undo): the one of that clip holding that time,
+        // where it was if that still fits. By its old place alone the
+        // keyframe went to whichever cut had taken it, of any clip.
+        let holds = |c: &Cut| c.input == done.input && done.t >= c.start && done.t <= c.end;
+        match self.edit.cuts.get(done.cut).filter(|c| holds(c)).map(|_| done.cut).or_else(|| self.edit.cuts.iter().position(holds)) {
+            Some(i) => done.cut = i,
+            None => return,
         }
         self.followed.borrow_mut().remove(&done.path);
         let follow = Follow::Track(done.path);
@@ -1310,6 +1331,14 @@ impl App {
         self.side = if self.side == Some(side) { None } else { Some(side) };
     }
 
+    /// After "Don't save" led to no other project: the changes count as
+    /// unsaved again.
+    fn keep_discarded(&mut self) {
+        if let Some((version, aspect)) = self.discarded.take() {
+            (self.saved_version, self.saved_aspect) = (version, aspect);
+        }
+    }
+
     fn unsaved(&self) -> bool {
         (self.edit.version != self.saved_version || self.aspect != self.saved_aspect) && self.has_edit()
     }
@@ -1322,7 +1351,6 @@ impl App {
     /// Parses the clip and probes the decoder off the UI thread.
     fn open(&mut self, path: PathBuf) -> Task<Message> {
         self.loading = Some(path.clone());
-        self.error = None;
         let opts = self.opts.clone();
         let part = self.loading_part.clone();
         part.store(0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -1389,6 +1417,9 @@ impl App {
                 );
             }
             Message::Picked(paths) => {
+                if !paths.is_empty() {
+                    self.error = None;
+                }
                 self.queue.extend(paths.into_iter().map(|p| (p, true)));
                 if self.loading.is_none() {
                     return self.open_next();
@@ -1461,7 +1492,13 @@ impl App {
                     return self.update(Message::SaveProject(false));
                 }
                 Choice::Discard => {
-                    // Let the changes go: the next save starts fresh.
+                    // Let the changes go: the next save starts fresh. Unless
+                    // no other project is opened after all (the dialog
+                    // cancelled, a file that won't load): then the changes
+                    // are still here and still unsaved, and closing must ask.
+                    if matches!(then, Then::OpenProject) {
+                        self.discarded = Some((self.saved_version, self.saved_aspect));
+                    }
                     self.saved_version = self.edit.version;
                     self.saved_aspect = self.aspect;
                     return self.proceed(then);
@@ -1481,16 +1518,22 @@ impl App {
                     Message::ProjectPicked,
                 );
             }
-            Message::ProjectPicked(None) => {}
+            Message::ProjectPicked(None) => self.keep_discarded(),
             Message::SaveProjectTo(None) => self.after_save = None,
             Message::ProjectPicked(Some(path)) => {
                 let project = match Project::load(&path) {
                     Ok(p) => p,
                     Err(e) => {
+                        self.keep_discarded();
                         self.error = Some(format!("{e:#}"));
                         return Task::none();
                     }
                 };
+                self.discarded = None;
+                // Clips still loading or waiting to be added belonged to the
+                // edit this one replaces; they'd become cuts of this project.
+                self.queue.clear();
+                self.loading_adds = false;
                 // Cuts of clips that are gone can't play; say so and leave them out.
                 let (mut cuts, missing): (Vec<_>, Vec<_>) = project.cuts.into_iter().partition(|c| c.input.exists());
                 // Each cut gets a mode of its own, so changing one leaves the rest.
@@ -1682,6 +1725,10 @@ impl App {
                 );
             }
             Message::ExportTo(None) => {}
+            // Checked again here: the dialog was open meanwhile, and a second
+            // one may have been too (two exports ran at once, one of them
+            // with no progress or Cancel), or the edit emptied.
+            Message::ExportTo(Some(_)) if self.exporting.is_some() || self.edit.cuts.is_empty() => {}
             Message::ExportTo(Some(path)) => return self.start_export(path),
             Message::ExportProgress(f) => {
                 if let Some((_, done)) = &mut self.exporting {
@@ -1769,6 +1816,7 @@ impl App {
                     // No "Saved …" (user: just annoying): the title's unsaved
                     // mark going is enough.
                     self.save_status = None;
+                    self.error = None;
                     self.project = Some(path);
                     if let Some(then) = self.after_save.take() {
                         return self.proceed(then);
@@ -1798,10 +1846,18 @@ impl App {
             Message::Toggle => {
                 self.follow = true;
                 let playing = self.clip.as_ref().is_some_and(|c| c.playback.playing);
+                // Paused on a cut's last frame, with more of the edit after
+                // it: on into that. Where the cut ran to its clip's end the
+                // playback took it for the end and started the clip over.
+                let onward = self.playing_cut().filter(|(cut, t)| !playing && *t >= cut.end - 1.5 / self.fps()).and_then(|(cut, _)| {
+                    self.edit.locate(self.edit.edit_time(self.current, cut.end) + 1e-6).filter(|&(i, _)| i != self.current)
+                });
                 if !playing && self.position() >= self.edit.duration() - 1.5 / self.fps() {
                     // From the end of the edit, play again from the start.
                     let start = self.edit.cuts.first().map_or(0.0, |c| c.start);
                     self.goto(0, start, true);
+                } else if let Some((i, t)) = onward {
+                    self.goto(i, t, true);
                 } else {
                     self.with_playback(Playback::toggle);
                 }
@@ -1895,12 +1951,13 @@ impl App {
                         // Its picture stays where it is on the edit; a
                         // picture has nothing before its own start.
                         let earliest = (item.start - (item.at - lo)).max(0.0);
-                        let t = t.clamp(earliest, item.end - edit::MIN_CUT);
+                        // (`clamp` panics on an item shorter than `MIN_CUT`.)
+                        let t = t.min(item.end - edit::MIN_CUT).max(earliest);
                         item.at += t - item.start;
                         item.start = t;
                     } else {
                         let latest = (item.start + (hi - item.at)).min(item.start + ffmpeg::PICTURE_MOST);
-                        item.end = t.clamp(item.start + edit::MIN_CUT, latest);
+                        item.end = t.max(item.start + edit::MIN_CUT).min(latest.max(item.end));
                     }
                 }
             }
@@ -1955,6 +2012,7 @@ impl App {
                 self.edit.music.clips.push(crate::project::MusicClip { input: path.clone(), at, start: 0.0, end: duration, fade_in: 0.0, fade_out: 0.0 });
                 self.selected_music = Some(self.edit.music.clips.len() - 1);
                 self.selected = None;
+                self.selected_overlay = None;
                 return self.load_waveform(&path);
             }
             Message::OverlayPicture(key, Ok((picture, missing))) => {
@@ -2127,24 +2185,29 @@ impl App {
                 self.edit.set_crossfade(i, to);
             }
             Message::Split if self.selected_music.is_some() => {
+                // Tried on a copy first: a split refused (the playhead at
+                // the song's edge or outside it) used to leave an undo step
+                // of nothing, which emptied redo and marked the project
+                // changed.
                 let i = self.selected_music.unwrap();
-                self.edit.checkpoint();
-                if self.edit.music.split(i, self.position(), edit::MIN_CUT) {
+                let at = self.position();
+                if self.edit.music.clone().split(i, at, edit::MIN_CUT) {
+                    self.edit.checkpoint();
+                    self.edit.music.split(i, at, edit::MIN_CUT);
                     self.selected_music = Some(i + 1);
-                } else {
-                    self.edit.undo();
                 }
             }
             Message::Split => {
                 let Some((_, t)) = self.playing_cut() else { return Task::none() };
                 let i = self.current;
-                self.edit.checkpoint();
-                if self.edit.split(i, t) {
+                if self.edit.can_split(i, t) {
+                    self.edit.checkpoint();
+                    self.edit.split(i, t);
                     // The playhead is now at the start of the second half.
                     self.current = i + 1;
                     self.selected = Some(i + 1);
-                } else {
-                    self.edit.undo();
+                    // Points are named by their cut's place, which moved.
+                    self.selected_sound = None;
                 }
             }
             Message::DeleteCut if self.selected_overlay.is_some() => {
@@ -2252,7 +2315,8 @@ impl App {
                 let gap = 1.0 / self.fps();
                 let Some(cut) = self.edit.cuts.get_mut(i) else { return Task::none() };
                 cut.keyframes.retime(k, t, gap);
-                let t = cut.keyframes[k].t;
+                // Gone, if it was deleted or undone while being dragged.
+                let Some(t) = cut.keyframes.get(k).map(|k| k.t) else { return Task::none() };
                 self.scrub_to(i, t);
             }
             Message::Look { yaw, pitch, roll } => {
@@ -2721,7 +2785,13 @@ impl App {
             }
         }
         if !missing.is_empty() {
-            self.error = Some(format!("Missing LUT, shown as filmed (add it in Settings): {}", missing.join(", ")));
+            // Beside what's already said (clips left out), not instead of it.
+            let said = format!("Missing LUT, shown as filmed (add it in Settings): {}", missing.join(", "));
+            match &mut self.error {
+                Some(e) if e.contains(&said) => {}
+                Some(e) if !e.contains("Missing LUT") => *e = format!("{e}. {said}"),
+                _ => self.error = Some(said),
+            }
         }
     }
 
@@ -2749,7 +2819,11 @@ impl App {
         if i != self.current || self.clip.is_none() {
             self.goto(i, t, false);
         }
-        self.with_playback(|p| p.scrub(t));
+        // Its clip may still be loading: then the cut showing stays, and
+        // isn't to be scrubbed to another cut's time.
+        if i == self.current {
+            self.with_playback(|p| p.scrub(t));
+        }
     }
 
     /// Saves the edit for undo once per drag.
@@ -2759,6 +2833,8 @@ impl App {
         self.selected_music = None;
         self.selected = None;
         self.selected_sound = None;
+        // Or Del took the title or overlay selected before, not the point.
+        self.selected_overlay = None;
     }
 
     /// Selects cut `cut`'s sound point `i`, and nothing else.
@@ -2767,6 +2843,7 @@ impl App {
         self.selected_volume = None;
         self.selected_music = None;
         self.selected = None;
+        self.selected_overlay = None;
     }
 
     fn begin_drag(&mut self) {
@@ -2874,7 +2951,6 @@ impl App {
     fn with_playback(&mut self, f: impl FnOnce(&mut Playback)) {
         if let Some(c) = &mut self.clip {
             f(&mut c.playback);
-            self.error = c.playback.error.clone();
         }
     }
 
@@ -2891,7 +2967,6 @@ impl App {
             c.shown = Some(Arc::new(Shown::new(frame, fix)));
             self.held = None;
         }
-        self.error = c.playback.error.clone();
         let Some(cut) = self.edit.cuts.get(self.current) else { return };
         let p = &c.playback;
         // A cut running to its clip's end has paused there (`ended`), and
@@ -3031,7 +3106,9 @@ impl App {
         match key.as_ref() {
             Key::Named(Named::Escape) if self.picking.is_some() => return self.update(Message::PickColour),
             Key::Named(Named::Escape) if self.fullscreen => return self.update(Message::Fullscreen),
-            Key::Named(Named::Space) => self.with_playback(Playback::toggle),
+            // As the Play button: back to the keyframes' view, and from the
+            // edit's end again from its start.
+            Key::Named(Named::Space) => return self.update(Message::Toggle),
             Key::Named(Named::ArrowLeft) if mods.shift() => self.free_look().yaw -= 2.0 * step,
             Key::Named(Named::ArrowRight) if mods.shift() => self.free_look().yaw += 2.0 * step,
             Key::Named(arrow @ (Named::ArrowLeft | Named::ArrowRight)) => {
@@ -3074,11 +3151,12 @@ impl App {
                 "k" | "K" if self.selected_music.is_some() || self.selected_volume.is_some() => {
                     let t = self.position();
                     let db = crate::project::volume_at(&self.edit.music.keyframes, t);
-                    self.edit.checkpoint();
-                    let keys = &mut self.edit.music.keyframes;
-                    match keys.iter().position(|k| (k.t - t).abs() < 0.01) {
+                    // Selecting one already there changes nothing to undo.
+                    match self.edit.music.keyframes.iter().position(|k| (k.t - t).abs() < 0.01) {
                         Some(i) => self.select_volume(i),
                         None => {
+                            self.edit.checkpoint();
+                            let keys = &mut self.edit.music.keyframes;
                             let i = keys.partition_point(|k| k.t <= t);
                             keys.insert(i, crate::project::VolumeKey { t, volume: db });
                             self.select_volume(i);
@@ -3090,11 +3168,11 @@ impl App {
                     let Some((_, t)) = self.playing_cut() else { return Task::none() };
                     let cut = self.current;
                     let db = crate::project::volume_at(&self.edit.cuts[cut].volume, t);
-                    self.edit.checkpoint();
-                    let keys = &mut self.edit.cuts[cut].volume;
-                    match keys.iter().position(|k| (k.t - t).abs() < 0.01) {
+                    match self.edit.cuts[cut].volume.iter().position(|k| (k.t - t).abs() < 0.01) {
                         Some(i) => self.select_sound(cut, i),
                         None => {
+                            self.edit.checkpoint();
+                            let keys = &mut self.edit.cuts[cut].volume;
                             let i = keys.partition_point(|k| k.t <= t);
                             keys.insert(i, crate::project::VolumeKey { t, volume: db });
                             self.select_sound(cut, i);
@@ -3114,7 +3192,25 @@ impl App {
                 "," | "." => {
                     self.follow = true;
                     let frames = if c == "," { -1.0 } else { 1.0 };
-                    self.with_playback(|p| p.step(frames));
+                    let frame = 1.0 / self.fps();
+                    let paused = self.clip.as_ref().is_some_and(|c| !c.playback.playing);
+                    // Past the cut's first or last frame: on into the cut
+                    // beside it. Stepping used to go on through the clip,
+                    // showing footage outside the cut with the playhead
+                    // left at its edge.
+                    let outside = self.playing_cut().filter(|_| paused).map(|(cut, t)| (t + frames * frame, cut.start, cut.end)).filter(|&(to, start, end)| to < start - 0.5 * frame || to > end - 0.5 * frame);
+                    match outside {
+                        Some(_) => {
+                            let at = self.position() + frames * frame;
+                            if at >= 0.0
+                                && at < self.edit.duration()
+                                && let Some((i, t)) = self.edit.locate(at + 1e-6).filter(|&(i, _)| i != self.current)
+                            {
+                                self.goto(i, t, false);
+                            }
+                        }
+                        None => self.with_playback(|p| p.step(frames)),
+                    }
                 }
                 "+" | "=" => self.free_look().zoom_by(-1.0),
                 "-" => self.free_look().zoom_by(1.0),
@@ -3171,7 +3267,11 @@ impl App {
 
     fn view(&self) -> Element<'_, Message> {
         let open_hint = if self.edit.cuts.is_empty() { "Open clips (Ctrl+O)" } else { "Add clips to the edit as cuts (Ctrl+O)" };
-        let error = self.error.as_ref().map(|e| text(e.clone()).style(text::danger));
+        // The app's own message, else the playing clip's decode error. They
+        // were one field, set from the playback after every tick and call,
+        // so "Left out cuts of missing clips" or "Export failed" was gone
+        // before it could be read.
+        let error = self.error.as_ref().or(self.clip.as_ref().and_then(|c| c.playback.error.as_ref())).map(|e| text(e.clone()).style(text::danger));
         let Some(clip) = &self.clip else {
             // Music first: the song is chosen and sets the length to fill.
             let song = self.edit.music.clips.first().map(|c| {
@@ -3638,6 +3738,8 @@ fn labelled<'a>(label: &'a str, widget: impl Into<Element<'a, Message>>) -> Elem
 #[derive(Debug, Clone)]
 pub struct TrackDone {
     path: PathBuf,
+    /// The clip tracked, to find its cut again when the track is done.
+    input: PathBuf,
     cut: usize,
     t: f64,
     found: usize,

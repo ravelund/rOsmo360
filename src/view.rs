@@ -564,6 +564,10 @@ impl Timed for Keyframe {
 /// neighbours (`gap` seconds clear of them) so the order and indices stay
 /// as they are: dragging one past another would swap what each holds.
 pub fn retime<T: Timed>(keys: &mut [T], i: usize, t: f64, gap: f64) {
+    // The keyframe may be gone by now (deleted or undone mid-drag).
+    if i >= keys.len() {
+        return;
+    }
     let lo = i.checked_sub(1).map_or(f64::NEG_INFINITY, |p| keys[p].time() + gap);
     let hi = keys.get(i + 1).map_or(f64::INFINITY, |n| n.time() - gap);
     if lo <= hi
@@ -653,10 +657,14 @@ impl TryFrom<Vec<RawKeyframe>> for Keyframes {
             if follow.is_none() && (r.offset_yaw.is_some() || r.offset_pitch.is_some()) {
                 bail!("keyframe at {} s has offset_yaw/offset_pitch but follows nothing", r.t);
             }
-            // A projection named anew starts at its own correction.
+            // A projection named starts at its own correction, the same one
+            // as before too: a keyframe is written with its projection and
+            // without a correction that's the projection's own, so carried
+            // over, a move from correction 0.5 back to 0 was saved as one
+            // staying at 0.5.
             let base = match (prev, r.projection) {
                 (None, p) => View::home(p.unwrap_or(Projection::Perspective)),
-                (Some(p), Some(proj)) if proj != p.view.projection => View { projection: proj, correction: View::home(proj).correction, ..p.view },
+                (Some(p), Some(proj)) => View { projection: proj, correction: View::home(proj).correction, ..p.view },
                 (Some(p), _) => p.view,
             };
             // Offsets carry over between keyframes following the same thing;
@@ -674,8 +682,11 @@ impl TryFrom<Vec<RawKeyframe>> for Keyframes {
                 None => (r.yaw.unwrap_or(base.yaw), r.pitch.unwrap_or(base.pitch)),
             };
             let view = View { yaw, pitch, roll: r.roll.unwrap_or(base.roll), fov: r.fov.unwrap_or(base.fov), projection: base.projection, correction: r.correction.unwrap_or(base.correction) };
-            if !(1.0..=359.0).contains(&view.fov) {
-                bail!("fov {} at {} s is out of range (1–359°)", view.fov, r.t);
+            // Half a turn and wider has no picture: tan(fov / 2) turns
+            // negative, which drew the view upside down and made a move to
+            // or from it black (the log of a negative zoom).
+            if !(1.0..=179.5).contains(&view.fov) {
+                bail!("fov {} at {} s is out of range (1–179.5°)", view.fov, r.t);
             }
             if !(0.0..=1.0).contains(&view.correction) {
                 bail!("correction {} at {} s is out of range (0–1)", view.correction, r.t);
@@ -769,6 +780,10 @@ mod tests {
         let back: Keyframes = serde_json::from_str(&json).unwrap();
         assert_eq!(back, k);
         assert!(serde_json::from_str::<Keyframes>(r#"[{"t": 0, "correction": 1.5}]"#).is_err());
+        // Back to the projection's own within one projection survives too.
+        let k: Keyframes = serde_json::from_str(r#"[{"t": 0, "correction": 0.5}, {"t": 1, "correction": 0}, {"t": 2, "projection": "little-planet", "correction": 0.7}, {"t": 3, "correction": 1}]"#).unwrap();
+        let back: Keyframes = serde_json::from_str(&serde_json::to_string(&k).unwrap()).unwrap();
+        assert_eq!(back.iter().map(|k| k.view.correction).collect::<Vec<_>>(), [0.5, 0.0, 0.7, 1.0]);
     }
 
     #[test]

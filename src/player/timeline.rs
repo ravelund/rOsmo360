@@ -308,13 +308,27 @@ impl Timeline {
         })
     }
 
-    /// The cut edge under `x`: (cut, whether it's the in edge). Later cuts
-    /// first: a crossfading cut's in edge lies over the cut before it.
+    /// The cut edge under `x`: (cut, whether it's the in edge). The nearest
+    /// one, the later cut's where two are as near (a crossfading cut's in
+    /// edge lies over the cut before it). It used to be the later cut's
+    /// whenever `x` was within reach of it, and its in edge reaches `PICK`
+    /// to its left: all of the out edge of the cut before, which couldn't
+    /// be grabbed.
     fn edge_hit(&self, x: f32, b: Rectangle) -> Option<(usize, bool)> {
-        (0..self.blocks.len()).rev().find_map(|i| {
+        let mut best: Option<(f32, usize, bool)> = None;
+        for i in (0..self.blocks.len()).rev() {
             let (l, r) = self.block_x(&self.blocks[i], b);
-            (x >= l - PICK && x <= r + PICK).then(|| self.edge_at(i, x, b)).flatten().map(|e| (i, e))
-        })
+            if x < l - PICK || x > r + PICK {
+                continue;
+            }
+            if let Some(start) = self.edge_at(i, x, b) {
+                let far = (x - if start { l } else { r }).abs();
+                if best.is_none_or(|(d, ..)| far < d) {
+                    best = Some((far, i, start));
+                }
+            }
+        }
+        best.map(|(_, i, start)| (i, start))
     }
 
     fn music_at(&self, x: f32, b: Rectangle) -> Option<usize> {
@@ -650,6 +664,10 @@ impl canvas::Program<Message> for OverlayLane {
                     OverlayDrag::None => return None,
                     OverlayDrag::Move { item, x0, at, per_px } => Message::OverlayMove((self.1, *item), *at + (x - *x0) as f64 * *per_px),
                     OverlayDrag::Trim { item, start, x0, from, per_px } => Message::OverlayTrim((self.1, *item), *start, *from + (x - *x0) as f64 * *per_px),
+                    OverlayDrag::Key { item, .. } if *item >= self.blocks().len() => {
+                        *drag = OverlayDrag::None;
+                        return None;
+                    }
                     OverlayDrag::Key { item, effects, key } => {
                         let o = &self.blocks()[*item];
                         let at = self.0.t(x, bounds).clamp(o.from, o.from + o.len);
@@ -1005,6 +1023,17 @@ impl canvas::Program<Message> for Marks {
             }
             Mouse(mouse::Event::CursorMoved { position }) => {
                 let x = position.x - bounds.x;
+                // What's dragged may be gone: keys still work mid-drag (Del,
+                // undo), and its place in the list was read at the press.
+                let gone = match drag {
+                    Drag::Key { cut, .. } | Drag::Effect { cut, .. } | Drag::Sound { cut, .. } => *cut >= self.blocks.len(),
+                    Drag::MusicMove { clip, .. } | Drag::MusicTrim { clip, .. } => *clip >= self.music.len(),
+                    _ => false,
+                };
+                if gone {
+                    *drag = Drag::None;
+                    return None;
+                }
                 let message = match drag {
                     Drag::None => return None,
                     Drag::Playhead => Message::Scrub(self.t(x, bounds)),

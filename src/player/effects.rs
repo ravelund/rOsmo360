@@ -265,6 +265,7 @@ impl App {
                 if edits && self.selected_text().is_some_and(|t| t.content != words) {
                     // A run of typing is one undo step, until something else is done.
                     self.begin_drag();
+                    self.typing = true;
                     if let Some(text) = self.selected_text() {
                         text.content = words;
                     }

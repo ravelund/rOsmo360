@@ -104,8 +104,12 @@ pub struct Lut {
 
 impl Lut {
     pub fn load(path: &Path) -> Result<Lut> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Lut::parse(&text).with_context(|| format!("reading the LUT {}", path.display()))
+        // Not as UTF-8 only: a title or comment in Latin-1 (©, é) is no reason
+    // to refuse numbers that are plain ASCII. Nor is a byte-order mark.
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_start_matches('\u{feff}');
+        Lut::parse(text).with_context(|| format!("reading the LUT {}", path.display()))
     }
 
     /// A `.cube` file (Adobe/Resolve): keywords, then `size³` lines of three

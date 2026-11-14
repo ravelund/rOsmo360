@@ -268,6 +268,10 @@ fn read_thumbs(r: &mut &[u8], width: usize, height: usize) -> Option<Vec<Thumb>>
         return None;
     }
     let n = u32_from(r)?;
+    // An empty set was stored when ffmpeg failed; make it afresh.
+    if n == 0 {
+        return None;
+    }
     (0..n)
         .map(|_| {
             let t = f64::from_le_bytes(take(r)?);

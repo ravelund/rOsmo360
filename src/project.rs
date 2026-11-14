@@ -339,7 +339,7 @@ impl Cut {
 }
 
 /// The shortest stretch of a cut its crossfades leave to it alone.
-const SOLO: f64 = 0.1;
+pub const SOLO: f64 = 0.1;
 
 /// Where each of `cuts` starts on the edit: after the one before, less the
 /// crossfade into it.

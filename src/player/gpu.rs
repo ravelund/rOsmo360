@@ -582,17 +582,18 @@ impl Layer {
         let mut rebind = false;
         for (slot, pic) in frame.pictures.iter().enumerate().take(2) {
             let bytes = if pic.deep { 2 } else { 1 };
+            let (cw, ch) = super::source::Picture::chroma(pic.width, pic.height);
             let (y, uv) = if pic.deep { &mut self.deep[slot] } else { &mut self.slots[slot] };
             if y.texture.width() != pic.width || y.texture.height() != pic.height {
                 (*y, *uv) = if pic.deep {
                     deep_planes(device, pic.width, pic.height)
                 } else {
-                    (plane(device, pic.width, pic.height, wgpu::TextureFormat::R8Unorm), plane(device, pic.width / 2, pic.height / 2, wgpu::TextureFormat::Rg8Unorm))
+                    (plane(device, pic.width, pic.height, wgpu::TextureFormat::R8Unorm), plane(device, cw, ch, wgpu::TextureFormat::Rg8Unorm))
                 };
                 rebind = true;
             }
             write(queue, &y.texture, pic.y(), pic.width, pic.height, bytes);
-            write(queue, &uv.texture, pic.uv(), pic.width / 2, pic.height / 2, 2 * bytes);
+            write(queue, &uv.texture, pic.uv(), cw, ch, 2 * bytes);
         }
         if rebind {
             self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut);
@@ -671,7 +672,7 @@ fn plane(device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat) -> 
 
 /// A 10-bit picture's Y and UV planes, `w` × `h`.
 fn deep_planes(device: &wgpu::Device, w: u32, h: u32) -> (Plane, Plane) {
-    (plane(device, w, h, wgpu::TextureFormat::R16Uint), plane(device, (w / 2).max(1), (h / 2).max(1), wgpu::TextureFormat::Rg16Uint))
+    (plane(device, w, h, wgpu::TextureFormat::R16Uint), plane(device, w.div_ceil(2), h.div_ceil(2), wgpu::TextureFormat::Rg16Uint))
 }
 
 fn write(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[u8], w: u32, h: u32, bpp: u32) {

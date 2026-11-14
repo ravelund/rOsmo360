@@ -39,7 +39,11 @@ pub fn save(r: Request) -> Result<PathBuf> {
         let frame = ffmpeg::still_out(&r.input, flat.track, r.t, r.hw, (w as usize, h as usize), flat.out(None, None))?;
         let out = match r.shot {
             Shot::Sphere { .. } => frame,
-            Shot::View { camera, size } => stitch::flat(&frame, size, &camera),
+            Shot::View { camera, size } => {
+                let mut out = stitch::flat(&frame, size, &camera);
+                crate::grade_frame(&mut out, &camera);
+                out
+            }
         };
         image::save_buffer(&r.path, &out.rgb, out.width as u32, out.height as u32, image::ColorType::Rgb8).with_context(|| format!("writing {}", r.path.display()))?;
         return Ok(r.path);
@@ -66,7 +70,11 @@ pub fn save(r: Request) -> Result<PathBuf> {
         Shot::Sphere { width } => stitch::equirect(&r.rig.lenses, &frames, width, None, &views, &seam),
         Shot::View { camera, size: (w, h) } => {
             let ray = |x: f64, y: f64| apply(camera.user, camera.ray(w as f64 / h as f64, [x / w as f64 * 2.0 - 1.0, y / h as f64 * 2.0 - 1.0]));
-            stitch::render(&r.rig.lenses, &frames, (w, h), ray, None, &views, &seam)
+            // With its LUT and effects, as the screen shows it: a D-Log M
+            // cut was saved flat. The whole sphere stays as filmed.
+            let mut out = stitch::render(&r.rig.lenses, &frames, (w, h), ray, None, &views, &seam);
+            crate::grade_frame(&mut out, &camera);
+            out
         }
     };
     image::save_buffer(&r.path, &out.rgb, out.width as u32, out.height as u32, image::ColorType::Rgb8).with_context(|| format!("writing {}", r.path.display()))?;
