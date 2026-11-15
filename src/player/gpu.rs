@@ -483,6 +483,26 @@ impl Pipeline {
         self.prepare_layer(0, device, queue, rig, shown, camera, rig_from_view, size, origin, &Part::default(), false);
     }
 
+    /// The first layer's 10-bit planes, per picture slot its Y and UV: where
+    /// zero-copy decoding puts the lens pictures itself.
+    #[cfg(feature = "zero-copy")]
+    pub fn lens_planes(&self) -> [[&wgpu::Texture; 2]; 2] {
+        [0, 1].map(|slot| [&self.layers[0].deep[slot].0.texture, &self.layers[0].deep[slot].1.texture])
+    }
+
+    /// Fills those planes with zeros through wgpu, so it counts them as
+    /// written (it clears textures it thinks were never written, on their
+    /// first use).
+    #[cfg(feature = "zero-copy")]
+    pub fn clear_lens_planes(&self, queue: &wgpu::Queue) {
+        for (y, uv) in &self.layers[0].deep {
+            for (plane, bytes) in [(y, 2), (uv, 4)] {
+                let (w, h) = (plane.texture.width(), plane.texture.height());
+                write(queue, &plane.texture, &vec![0; (w * h * bytes) as usize], w, h, bytes);
+            }
+        }
+    }
+
     /// Gets a transition's two cuts ready to draw: the first as its `part`
     /// has it, with `other`.
     #[allow(clippy::too_many_arguments)]
@@ -640,8 +660,11 @@ impl Layer {
                 };
                 rebind = true;
             }
-            write(queue, &y.texture, pic.y(), pic.width, pic.height, bytes);
-            write(queue, &uv.texture, pic.uv(), cw, ch, 2 * bytes);
+            // A picture without bytes is already in the textures (zero-copy).
+            if !pic.data.is_empty() {
+                write(queue, &y.texture, pic.y(), pic.width, pic.height, bytes);
+                write(queue, &uv.texture, pic.uv(), cw, ch, 2 * bytes);
+            }
         }
         if rebind {
             self.bind_group = bind(device, layout, &self.uniforms, sampler, &self.slots, &self.deep, &self.masks, &self.lut, &self.flow);

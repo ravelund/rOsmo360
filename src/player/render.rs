@@ -49,6 +49,12 @@ pub struct Gpu {
     deep: bool,
     /// The adapter's name, for the log.
     pub name: String,
+    /// Zero-copy decoding on this device (the prototype; `ROSMO360_ZEROCOPY`
+    /// asks for it), and the lens planes made ready for its copies.
+    #[cfg(feature = "zero-copy")]
+    shared: Option<crate::zerocopy::Shared>,
+    #[cfg(feature = "zero-copy")]
+    primed: Vec<wgpu::Texture>,
 }
 
 /// What a frame renders into, and the buffer it is read back through.
@@ -72,15 +78,72 @@ impl Gpu {
         if info.device_type == wgpu::DeviceType::Cpu {
             bail!("only a software renderer ({})", info.name);
         }
+        #[cfg(feature = "zero-copy")]
+        if std::env::var_os("ROSMO360_ZEROCOPY").is_some() {
+            match crate::zerocopy::Shared::open(&adapter) {
+                Ok((device, queue, shared)) => {
+                    let stitcher = gpu::Pipeline::create(&device, format(deep));
+                    return Ok(Gpu { device, queue, stitcher, size: (0, 0), targets: Vec::new(), pending: VecDeque::new(), next: 0, frames: 0, deep, name: info.name, shared: Some(shared), primed: Vec::new() });
+                }
+                // The pipe path is always there.
+                Err(e) => eprintln!("zero-copy decoding isn't available ({e:#}); decoding as usual"),
+            }
+        }
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("export"), ..Default::default() }))?;
         let stitcher = gpu::Pipeline::create(&device, format(deep));
-        Ok(Gpu { device, queue, stitcher, size: (0, 0), targets: Vec::new(), pending: VecDeque::new(), next: 0, frames: 0, deep, name: info.name })
+        Ok(Gpu {
+            device,
+            queue,
+            stitcher,
+            size: (0, 0),
+            targets: Vec::new(),
+            pending: VecDeque::new(),
+            next: 0,
+            frames: 0,
+            deep,
+            name: info.name,
+            #[cfg(feature = "zero-copy")]
+            shared: None,
+            #[cfg(feature = "zero-copy")]
+            primed: Vec::new(),
+        })
     }
 
     /// Starts rendering `shown` through `camera` at `size`; `finish` hands
     /// the frames back in order. At most `IN_FLIGHT` may be waiting, so
     /// `finish` one first when that many are.
-    pub fn submit(&mut self, rig: &Rig, shown: &Shown, camera: &Camera, views: &[M3], (w, h): (usize, usize)) {
+    pub fn submit(&mut self, rig: &Rig, shown: &Shown, camera: &Camera, views: &[M3], size: (usize, usize)) {
+        self.submit_from(rig, shown, camera, views, size, |_| Ok(())).expect("nothing to fail");
+    }
+
+    /// `submit` for a frame whose lens pictures zero-copy decoding holds:
+    /// copied on the GPU into the stitcher's planes before it draws.
+    #[cfg(feature = "zero-copy")]
+    pub fn submit_pair(&mut self, rig: &Rig, shown: &Shown, camera: &Camera, views: &[M3], size: (usize, usize), pair: &crate::zerocopy::Pair) -> Result<()> {
+        self.submit_from(rig, shown, camera, views, size, |gpu| {
+            // The copy isn't in wgpu's queue: the frames before must have
+            // been drawn from the planes before they change.
+            gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
+            let planes: Vec<wgpu::Texture> = gpu.stitcher.lens_planes().iter().flatten().map(|&t| t.clone()).collect();
+            if planes != gpu.primed {
+                // New planes: written once through wgpu and drawn from once,
+                // which leaves them in the layout it samples them in and
+                // believes them in from then on.
+                gpu.stitcher.clear_lens_planes(&gpu.queue);
+                let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                let (w, h) = gpu.size;
+                gpu.stitcher.draw(&mut encoder, &gpu.targets[0].view, &Rectangle { x: 0, y: 0, width: w as u32, height: h as u32 });
+                gpu.queue.submit([encoder.finish()]);
+                gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
+                gpu.primed = planes;
+            }
+            gpu.shared.as_ref().context("zero-copy isn't on")?.copy(pair, gpu.stitcher.lens_planes())
+        })
+    }
+
+    /// `submit`, with `ready` run once the stitcher's textures are there
+    /// and before the frame is drawn.
+    fn submit_from(&mut self, rig: &Rig, shown: &Shown, camera: &Camera, views: &[M3], (w, h): (usize, usize), ready: impl FnOnce(&mut Gpu) -> Result<()>) -> Result<()> {
         assert!(self.pending.len() < IN_FLIGHT, "finish a frame before submitting another");
         if self.size != (w, h) {
             assert!(self.pending.is_empty(), "the size changed with frames in flight");
@@ -92,8 +155,9 @@ impl Gpu {
         // A 16-bit target keeps the precision itself.
         self.stitcher.dither = (!self.deep).then_some(self.frames);
         self.frames = self.frames.wrapping_add(1);
-        let target = &self.targets[slot];
         self.stitcher.prepare_frame(&self.device, &self.queue, rig, shown, camera, views, [w as f32, h as f32], [0.0, 0.0]);
+        ready(self)?;
+        let target = &self.targets[slot];
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.stitcher.draw(&mut encoder, &target.view, &Rectangle { x: 0, y: 0, width: w as u32, height: h as u32 });
         encoder.copy_texture_to_buffer(
@@ -110,6 +174,7 @@ impl Gpu {
             let _ = tx.send(r);
         });
         self.pending.push_back((slot, rx));
+        Ok(())
     }
 
     /// The oldest submitted frame as RGB, waiting for the GPU if need be;
@@ -231,6 +296,45 @@ pub fn encode(
         (None, Some(proxy)) => Kind::Lrf(proxy.clone()),
         (None, None) => Kind::Osv { path: p.input.clone(), tracks: p.tracks.clone(), size: None },
     };
+    // Zero-copy (the prototype): the lens tracks decoded on this device,
+    // their pictures never leaving the GPU. No seam corrections yet: they
+    // are measured from pictures on the CPU.
+    #[cfg(feature = "zero-copy")]
+    if let (Some(shared), Kind::Osv { .. }) = (&gpu.shared, &kind) {
+        let frames = shared.stream(&p.input, &[0, 1], start)?;
+        let mut done = 0;
+        let mut last: Option<stitch::Frame> = None;
+        for n in 0..total {
+            let Ok(pair) = frames.recv() else { break };
+            let pair = pair?;
+            let t = start + n as f64 / p.fps;
+            let views = if p.stab.has_data() { p.stab.rig_from_view(t * 1000.0, p.readout_ms, p.rs_steps) } else { vec![stitch::IDENTITY] };
+            if gpu.pending.len() == IN_FLIGHT
+                && let Some(frame) = gpu.finish()?
+            {
+                encoder.write(&frame)?;
+                done += 1;
+                tick(done)?;
+                last = Some(frame);
+            }
+            let (w, h) = pair.size();
+            let remote = || source::Picture { width: w, height: h, deep: true, data: Vec::new() };
+            let shown = Shown::new(Frame { pts: t, layout: source::Layout::PerTrack, pictures: vec![remote(), remote()] }, SeamFix::default());
+            gpu.submit_pair(&clip.rig, &shown, &camera(t), &views, size, &pair)?;
+        }
+        while let Some(frame) = gpu.finish()? {
+            encoder.write(&frame)?;
+            done += 1;
+            tick(done)?;
+            last = Some(frame);
+        }
+        let last = last.context("no frames decoded")?;
+        p.warn_held(total - done);
+        for _ in done..total {
+            encoder.write(&last)?;
+        }
+        return Ok(());
+    }
     let stream = source::spawn(kind, clip.hw, start, p.fps)?;
     let failed = stream.error.clone();
     let rig = &clip.rig;

@@ -15,7 +15,7 @@ fn bind() {
         includes.extend(found.include_paths);
     }
     let bindings = bindgen::Builder::default()
-        .header_contents("libav.h", "#include <libavformat/avformat.h>\n#include <libavcodec/avcodec.h>\n#include <libavutil/hwcontext.h>\n#include <libavutil/pixdesc.h>\n")
+        .header_contents("libav.h", "#include <libavformat/avformat.h>\n#include <libavcodec/avcodec.h>\n#include <libavutil/hwcontext.h>\n#include <libavutil/hwcontext_vulkan.h>\n#include <libavutil/pixdesc.h>\n")
         .clang_args(includes.iter().map(|p| format!("-I{}", p.display())))
         .allowlist_function("av_.*|avcodec_.*|avformat_.*")
         .allowlist_type("AV.*")
