@@ -74,7 +74,7 @@ The first clip starts playing as soon as it has loaded; the others load behind i
 
 ## 2. The window
 
-![The rOsmo360 editor: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and underneath the transport row, the view angles (Yaw 20, Pitch 4, Roll 0, FOV 70, Correction 0) and the timeline: a Text and an Overlay lane, four cuts with crossfades between them, their keyframe rows, the seek bar and a soundtrack lane with its waveform](guide/editor.jpg)
+![The rOsmo360 editor: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and underneath the transport row, the view angles (Yaw 20, Pitch 4, Roll 0, FOV 70, Correction 0) and the timeline: the seek bar, a Text and an Overlay lane, four cuts with a transition between each, their keyframe rows and a soundtrack lane with its waveform](guide/editor.jpg)
 
 From top to bottom:
 
@@ -100,7 +100,7 @@ From top to bottom:
 
 5. **The timeline**, from the top: the seek bar, the **Text** lane and the **Overlay** lane (once they have something in them, each with its own keyframe rows), the cuts of your edit with thumbnails, their **Effects** and **View** keyframe rows, and the music lane.
 
-   ![The timeline: a teal title block on the Text lane and an orange logo block on the Overlay lane, each with Effects and Motion rows; four cuts with thumbnails and labels such as "0045 · 12.0 s" and "0026 · 10.0 s · world lock", crossed boxes where cuts crossfade and a light-blue sound line; the Effects and View rows with keyframe marks; the seek bar; and a green soundtrack lane with its waveform and an orange volume line](guide/timeline.png)
+   ![The timeline: the seek bar along the top with the playhead running down through every lane; a teal title block on the Text lane and an orange logo block on the Overlay lane, each with Effects and Motion rows; four cuts with thumbnails and labels such as "0045 · 12.0 s" and "0026 · 10.0 s · world lock", a mark over each overlap (a diagonal for a wipe, a ring for a spin, an X for a dissolve) and a light-blue sound line; the Effects and View rows with keyframe marks; and a green soundtrack lane with its waveform and an orange volume line](guide/timeline.png)
 
    On the cuts, a mark over an overlap is a transition (an **X** for a crossfade; see [Transitions](#8-transitions-and-crossfades)) and a light-blue line a cut's own sound level. Each track's keyframes sit in faint rows under it, named at the left: **View** for the camera's keyframes (see [Keyframes](#7-keyframes-moving-the-camera)), **Effects** for colour ([Effects](#10-effects-colour-opacity-and-fades)), and **Motion** for where an overlay is ([Titles and overlays](#11-titles-and-overlays)). Click a mark to jump to it, and drag it to move it to another moment. In the music lane, the orange line is the music's volume.
 
@@ -211,7 +211,7 @@ With a long edit, short cuts and close keyframes get narrow. Zoom in:
 - **Ctrl+=** / **Ctrl+−**, or the magnifier icons and the slider between them, zoom around the playhead.
 - **Ctrl+0**, or the arrows-to-both-ends icon, shows the whole edit again.
 
-![The timeline zoomed in on the end of the first cut and the start of the second: rock thumbnails, the crossfade's X, the second cut's light-blue sound line, the View row's keyframe marks, the seek bar, and a scrollbar underneath](guide/timeline-zoomed.png)
+![The timeline zoomed in on the end of the first cut and the start of the second: the seek bar at the top, rock thumbnails, a wipe's diagonal over the overlap, the second cut's light-blue sound line, the View row's keyframe marks, and a scrollbar underneath](guide/timeline-zoomed.png)
 
 When zoomed in, a scrollbar appears at the bottom of the timeline. Drag it, use Shift+scroll, or scroll sideways on a touchpad to move along. While playing, the timeline scrolls along to keep the playhead in sight.
 
@@ -299,6 +299,8 @@ A transition takes one cut into the next over a moment, picture and sound togeth
 
 Select the later of the two cuts and click **transitions** (two overlapping frames) in the transport row, or press **T**: the Transitions panel opens at the left of the view. With no cut selected it shows the cut that's playing. Each style is an icon; hover over one for its name.
 
+![The Transitions panel for cut 2, a wipe, with a ✕ to close it: two rows of style icons (none, dissolve, dip to black, dip to white; wipe, push, slide, spin) with wipe chosen; Direction, four arrows with right chosen; Length, a slider at 1.00 s; and the to-all-cuts icon](guide/transitions-panel.png)
+
 - **None**: a plain cut.
 - **Dissolve**: the first cut fades into the second (the crossfade).
 - **Dip to black**, **Dip to white**: the first cut fades out to black or white and the second fades in from it.
@@ -312,7 +314,7 @@ Picking a style gives the cut a 1 second transition. Wipe, push, slide and spin 
 - **Make it longer or shorter on the timeline**: hold **Shift** and drag the later cut's left edge. Further left is a longer transition, back right a shorter one. (Without Shift, the same drag trims the cut.) On a plain cut this makes a dissolve.
 - On the timeline the overlap is darkened and carries its style's mark: an **X** for a dissolve, a V for a dip (down to black, up to white), one diagonal for a wipe, an arrowhead for a slide and two for a push, a ring for a spin.
 
-![The timeline zoomed in: the second cut overlapping the end of the first, with an X over the overlap, and the soundtrack lane below](guide/timeline-zoomed.png)
+![The timeline zoomed in: the second cut overlapping the end of the first, with a wipe's diagonal over the overlap, and the soundtrack lane below](guide/timeline-zoomed.png)
 
 The edit gets shorter by each transition, since the cuts overlap. No extra footage is needed: it uses the end of the first cut and the start of the second, as you trimmed them. It can't be longer than either cut allows, and trimming a cut shorter shortens its transition to fit. The first cut has none, as nothing comes before it.
 
@@ -508,7 +510,7 @@ A project starts playing as soon as its first cut's clip has loaded; the others 
 
 Click **export** (an arrow out of a tray) in the top bar, or press **Ctrl+E**, for the **Export panel** at the right of the view.
 
-![The Export panel: Resolution 1080p; Format MP4 or DaVinci Resolve, each with a note; Clips, "A file per cut"; what the export will make, "1920 × 1080, 0:43.50", in the aspect's shape; and the Export… button](guide/export-panel.png)
+![The Export panel: Resolution 1080p; Frame rate, As filmed; Format MP4 or DaVinci Resolve, each with a note; Clips, "A file per cut"; what the export will make, "1920 × 1080, 0:42.50", in the aspect's shape; the Export… button; and Test features, with the Zero-copy decoding switch and its note](guide/export-panel.png)
 
 1. **Resolution**: 720p, 1080p (the default, good for sharing online), 1440p or 2160p (4K). It's the short side of the picture, so 1080p is 1920 × 1080 for 16:9, or 1080 × 1920 for 9:16. The shape comes from the **Aspect** picker in the top bar, 16:9 when it's Free; the panel says what you'll get.
 2. **Frame rate**: **As filmed** keeps the clips' own rate (an edit of clips at different rates takes its first Osmo clip's). Or pick 24, 25, 30, 50, 60 or 100 frames a second: frames are dropped or repeated to it, and nothing changes speed. Clips filmed at 100 fps export about three times as fast at 30, as there's a third of the frames to stitch. A rate close to the clips' own but not equal (30 for clips filmed at 29.97) repeats a frame every half minute or so; As filmed avoids that.

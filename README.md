@@ -2,7 +2,7 @@
 
 A 360° video player and editor for **DJI Osmo 360** footage, written in Rust. It plays the camera's `.OSV` files directly: it stitches the two fisheye lenses, stabilises with the camera's gyro data and lets you look around freely, without going through DJI Studio. Then you can cut clips together on a timeline, with ordinary videos and photos beside them, keyframe the camera's view, add transitions, music, colour effects, titles and logos, and export a framed video.
 
-![rOsmo360 editing a mountain hike: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and below it the view angles and the timeline: a text lane and an overlay lane, cuts from four clips with crossfades, thumbnails and keyframe rows, and a soundtrack lane with its waveform and volume line](docs/screenshot.png)
+![rOsmo360 editing a mountain hike: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and below it the view angles and the timeline: a text lane and an overlay lane, cuts from four clips with transitions between them, thumbnails and keyframe rows, and a soundtrack lane with its waveform and volume line](docs/screenshot.png)
 
 **New here? Read the [user guide](docs/user-guide.md)**: the whole app, step by step, with screenshots.
 
