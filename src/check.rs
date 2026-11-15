@@ -106,7 +106,7 @@ pub fn check(path: &Path, opts: &StitchOpts, fast_pan: f64) -> Result<()> {
                 let gap = c.start - before.end;
                 if c.start < before.end && c.end > before.start {
                     say(at, Some(n), "repeat", format!("shows {:.1} s of footage #{n} already shows", before.end.min(c.end) - c.start.max(before.start)));
-                } else if c.crossfade > 0.0 && (0.0..SAME_SCENE).contains(&gap) {
+                } else if c.crossfade > 0.0 && c.transition.is_dissolve() && (0.0..SAME_SCENE).contains(&gap) {
                     say(at, Some(n), "crossfade", format!("dissolves from #{n} of the same clip only {gap:.1} s later: one scene, the picture seems to stutter (a plain cut reads as a jump on purpose)"));
                 }
             }

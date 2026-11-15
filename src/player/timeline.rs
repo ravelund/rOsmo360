@@ -1,10 +1,11 @@
-//! The timeline under the view. The top row holds the edit's cuts as
-//! blocks showing thumbnails of their footage: click one to select it, drag
-//! it to move it, drag its edges to trim it. Below is the seek bar with each
-//! cut's keyframes as diamonds (shaped by their ease): click the bar to seek,
-//! click a diamond to jump to it, drag one to retime it.
+//! The timeline under the view. At its top is the seek bar (`SeekBar`, a
+//! canvas of its own: click or drag it to seek). The main canvas's top row
+//! holds the edit's cuts as blocks showing thumbnails of their footage:
+//! click one to select it, drag it to move it, drag its edges to trim it.
+//! Below are each cut's keyframes as diamonds (shaped by their ease): click
+//! a diamond to jump to it, drag one to retime it.
 //!
-//! Under the seek bar is the music lane: the music track's clips with their
+//! Under them is the music lane: the music track's clips with their
 //! waveforms, moved and trimmed like cuts, and a line where the video ends
 //! (music beyond it fades out in the export).
 //!
@@ -49,8 +50,8 @@ const SCROLL_BAR: f32 = 5.0;
 /// How far the lanes may shrink or grow, as a share of their own height.
 pub const SCALES: std::ops::RangeInclusive<f32> = 0.75..=3.0;
 
-/// Where the rows sit, top to bottom: the cuts, their keyframe rows, the
-/// seek bar, the music lane and the scrollbar. Dragging the divider above
+/// Where the main canvas's rows sit, top to bottom: the cuts, their
+/// keyframe rows, the music lane and the scrollbar. Dragging the divider above
 /// the transport row scales the lanes that hold pictures and waveforms
 /// (cuts, music, overlays); the rows of marks and the seek bar keep their
 /// height, as their marks do.
@@ -71,7 +72,8 @@ impl Rows {
         let scale = scale.clamp(*SCALES.start(), *SCALES.end());
         let (cuts, music) = ((CUTS * scale).round(), (MUSIC * scale).round());
         let seek_top = cuts + EFFECTS + KEYS;
-        let music_top = seek_top + SEEK;
+        // The seek bar is a canvas of its own, at the top of the timeline.
+        let music_top = seek_top;
         Rows { cuts, effects_top: cuts, keys_top: cuts + EFFECTS, seek_top, music, music_top, height: music_top + music + SCROLL, overlay: (OVERLAY * scale).round() }
     }
 
@@ -425,7 +427,8 @@ impl Timeline {
             let height = lane.height();
             iced::widget::container(canvas(lane).width(iced::Length::Fill).height(height)).clip(true)
         };
-        iced::widget::column![lane(Track::Text), lane(Track::Overlay), iced::widget::container(layers).clip(true)].into()
+        let seek = iced::widget::container(canvas(SeekBar(t.clone())).width(iced::Length::Fill).height(SEEK)).clip(true);
+        iced::widget::column![seek, lane(Track::Text), lane(Track::Overlay), iced::widget::container(layers).clip(true)].into()
     }
 
     /// The music lane: its clips with their waveforms and handles, and where
@@ -775,6 +778,57 @@ impl canvas::Program<Message> for OverlayLane {
                 }
             }
         }
+    }
+}
+
+/// The seek bar, over every lane (user, 2026-11-15: it sat between the
+/// keyframe rows and the music): the edit's length with the part played
+/// filled, a tick where each cut begins and the playhead's knob. A press
+/// or a drag anywhere on it scrubs.
+struct SeekBar(Arc<Timeline>);
+
+impl canvas::Program<Message> for SeekBar {
+    /// Whether a scrub is under way.
+    type State = bool;
+
+    fn update(&self, scrubbing: &mut bool, event: &iced::Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Message>> {
+        use iced::Event::Mouse;
+        match event {
+            Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let p = cursor.position_in(bounds)?;
+                *scrubbing = true;
+                Some(canvas::Action::publish(Message::Scrub(self.0.t(p.x, bounds))).and_capture())
+            }
+            Mouse(mouse::Event::CursorMoved { position }) if *scrubbing => Some(canvas::Action::publish(Message::Scrub(self.0.t(position.x - bounds.x, bounds))).and_capture()),
+            Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if *scrubbing => {
+                *scrubbing = false;
+                Some(canvas::Action::publish(Message::ScrubDone).and_capture())
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(&self, _: &bool, renderer: &Renderer, theme: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let t = &self.0;
+        let palette = theme.extended_palette();
+        let mut frame = Frame::new(renderer, bounds.size());
+        let mid = SEEK / 2.0;
+        let (x0, x1) = (t.x(0.0, bounds), t.x(t.duration, bounds));
+        let bar = |from: f32, to: f32| Path::rounded_rectangle(Point::new(from, mid - BAR / 2.0), Size::new((to - from).max(0.0), BAR), (BAR / 2.0).into());
+        frame.fill(&bar(x0, x1), palette.background.strong.color);
+        let at = t.x(t.position, bounds);
+        frame.fill(&bar(x0, at), palette.primary.base.color);
+        // Where one cut ends and the next begins.
+        for c in t.blocks.iter().skip(1) {
+            let x = t.x(c.from, bounds);
+            frame.fill(&Path::rectangle(Point::new(x - 1.0, mid - BAR), Size::new(2.0, 2.0 * BAR)), palette.background.base.color);
+        }
+        frame.fill(&Path::circle(Point::new(at, mid), BAR), palette.primary.strong.color);
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(&self, _: &bool, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if cursor.is_over(bounds) { mouse::Interaction::Pointer } else { mouse::Interaction::default() }
     }
 }
 
@@ -1148,18 +1202,8 @@ impl canvas::Program<Message> for Marks {
         }
 
         self.draw_music(&mut frame, theme, bounds);
-        let mid = self.rows.seek_top + SEEK / 2.0;
         let keys_mid = self.rows.keys_top + KEYS / 2.0;
-        let (x0, x1) = (self.x(0.0, bounds), self.x(self.duration, bounds));
-        let bar = |from: f32, to: f32| Path::rounded_rectangle(Point::new(from, mid - BAR / 2.0), Size::new((to - from).max(0.0), BAR), (BAR / 2.0).into());
-        frame.fill(&bar(x0, x1), palette.background.strong.color);
         let at = self.x(self.position, bounds);
-        frame.fill(&bar(x0, at), palette.primary.base.color);
-        // Where one cut ends and the next begins.
-        for c in self.blocks.iter().skip(1) {
-            let x = self.x(c.from, bounds);
-            frame.fill(&Path::rectangle(Point::new(x - 1.0, mid - BAR), Size::new(2.0, 2.0 * BAR)), palette.background.base.color);
-        }
         for (ci, c) in self.blocks.iter().enumerate() {
             for &(ki, t, ease, follows) in &c.keys {
                 let (x, mid) = (self.x(c.from + t - c.start, bounds), keys_mid);
@@ -1177,7 +1221,6 @@ impl canvas::Program<Message> for Marks {
         self.draw_sound(&mut frame, bounds);
         frame.fill(&Path::rectangle(Point::new(at - 1.0, 0.0), Size::new(2.0, self.rows.seek_top)), palette.primary.strong.color);
         frame.fill(&Path::rectangle(Point::new(at - 1.0, self.rows.music_top), Size::new(2.0, self.rows.music)), palette.primary.strong.color);
-        frame.fill(&Path::circle(Point::new(at, mid), BAR), palette.primary.strong.color);
         if self.zoomed() {
             let y = self.rows.height - SCROLL / 2.0 - SCROLL_BAR / 2.0;
             let pill = |l: f32, r: f32| Path::rounded_rectangle(Point::new(l, y), Size::new((r - l).max(SCROLL_BAR), SCROLL_BAR), (SCROLL_BAR / 2.0).into());

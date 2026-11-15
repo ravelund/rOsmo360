@@ -343,10 +343,16 @@ mod tests {
     fn draw_flat_as(gpu: &mut Gpu, frame: Frame, hdr: crate::hdr::Hdr, (w, h): (usize, usize), camera: Camera) -> stitch::Frame {
         let shown = Shown::new(frame, SeamFix::default());
         let rig = Rig::flat(0, hdr);
-        gpu.size = (0, 0);
-        gpu.targets = vec![gpu.make_target(w, h)];
         gpu.stitcher.prepare_frame(&gpu.device, &gpu.queue, &rig, &shown, &camera, &[stitch::IDENTITY], [w as f32, h as f32], [0.0, 0.0]);
         gpu.stitcher.prepare_overlays(&gpu.device, &gpu.queue, &[], [w as f32, h as f32], [0.0, 0.0], [w as f32, h as f32]);
+        drawn(gpu, (w, h))
+    }
+
+    /// What the stitcher has prepared, drawn into a `w` × `h` target and
+    /// read back.
+    fn drawn(gpu: &mut Gpu, (w, h): (usize, usize)) -> stitch::Frame {
+        gpu.size = (0, 0);
+        gpu.targets = vec![gpu.make_target(w, h)];
         let target = &gpu.targets[0];
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         gpu.stitcher.draw(&mut encoder, &target.view, &Rectangle { x: 0, y: 0, width: w as u32, height: h as u32 });
@@ -363,6 +369,40 @@ mod tests {
         gpu.pending.push_back((0, rx));
         gpu.size = (w, h);
         gpu.finish().unwrap().unwrap()
+    }
+
+    /// The player's two layers through every transition come out as the
+    /// export's mix of the two cuts' frames.
+    #[test]
+    fn gpu_transitions_match_the_cpu() {
+        use crate::hdr::Hdr;
+        use crate::transition::{Direction, Style, Transition};
+        let Ok(mut gpu) = Gpu::new(false) else { return };
+        let (w, h) = (64, 32);
+        let camera = crate::view::View::home(crate::view::Projection::Perspective).camera();
+        let pictures = || [p010(w, h, |x| 200 + 8 * x as u16, 512, 400), p010(w, h, |x| 900 - 10 * x as u16, 600, 512)];
+        let [a, b] = pictures().map(|f| draw_flat(&mut gpu, f, Hdr::None, (w, h)));
+        let [old, new] = pictures().map(|f| (Arc::new(Rig::flat(0, Hdr::None)), Arc::new(Shown::new(f, SeamFix::default()))));
+        let size = [w as f32, h as f32];
+        for style in Style::ALL.into_iter().filter(|&s| s != Style::Spin) {
+            for direction in Direction::ALL {
+                let t = Transition { style, direction };
+                for p in [0.3, 0.7] {
+                    let [out, inc] = t.parts(p);
+                    let want = t.mix(p, &a, &b);
+                    // Either cut may be the one the player holds as current.
+                    for swapped in [false, true] {
+                        let ((first, part), (other, theirs)) = if swapped { ((&new, inc), (&old, out)) } else { ((&old, out), (&new, inc)) };
+                        let other = crate::player::gpu::Incoming { rig: other.0.clone(), shown: other.1.clone(), camera, rig_from_view: vec![stitch::IDENTITY], part: theirs, under: swapped };
+                        gpu.stitcher.prepare_frame(&gpu.device, &gpu.queue, &first.0, &first.1, &camera, &[stitch::IDENTITY], size, [0.0, 0.0]);
+                        gpu.stitcher.prepare_pair(&gpu.device, &gpu.queue, &first.0, &first.1, &camera, &[stitch::IDENTITY], &part, &other, size, [0.0, 0.0]);
+                        let got = drawn(&mut gpu, (w, h));
+                        let worst = got.rgb.iter().zip(&want).map(|(&g, &c)| (g as i32 - c as i32).abs()).max().unwrap();
+                        assert!(worst <= 2, "{t:?} at {p} (swapped: {swapped}): {worst} levels off");
+                    }
+                }
+            }
+        }
     }
 
     /// The shader brings a 10-bit HLG picture to SDR as `hdr::to_sdr` does.

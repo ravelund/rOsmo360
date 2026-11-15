@@ -10,6 +10,7 @@
 
 use crate::ffmpeg::FrameSink;
 use crate::stitch::Frame;
+use crate::transition::Transition;
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -24,6 +25,8 @@ pub struct Dissolve<'a> {
     frames: usize,
     head: usize,
     tail: usize,
+    /// How its head comes in over the held tail.
+    transition: Transition,
     held: Option<BufReader<File>>,
     holding: Option<BufWriter<File>>,
     /// The two files, swapped at each cut: one read, one written.
@@ -39,12 +42,14 @@ impl<'a> Dissolve<'a> {
         hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
         let key = hasher.finish();
         let file = |k| std::env::temp_dir().join(format!("rosmo360-dissolve-{}-{key:016x}-{k}.rgb", std::process::id()));
-        Dissolve { out, n: 0, frames: 0, head: 0, tail: 0, held: None, holding: None, files: [file(0), file(1)] }
+        Dissolve { out, n: 0, frames: 0, head: 0, tail: 0, transition: Transition::default(), held: None, holding: None, files: [file(0), file(1)] }
     }
 
     /// Starts the next cut of `frames` frames, whose first `head` cross the
-    /// last cut's held tail and whose last `tail` cross the next cut.
-    pub fn cut(&mut self, frames: usize, head: usize, tail: usize) -> Result<()> {
+    /// last cut's held tail by `transition` and whose last `tail` cross the
+    /// next cut.
+    pub fn cut(&mut self, frames: usize, head: usize, tail: usize, transition: Transition) -> Result<()> {
+        self.transition = transition;
         self.held = None;
         if let Some(mut w) = self.holding.take() {
             w.flush()?;
@@ -78,15 +83,9 @@ impl FrameSink for Dissolve<'_> {
         {
             let mut before = vec![0; frame.rgb.len()];
             r.read_exact(&mut before).context("reading the crossfade's held frames")?;
-            // Linear, by frame centres: the first frame already a little in.
-            let a = (n as f32 + 0.5) / self.head as f32;
-            let mix = |b: f32, c: f32| b + (c - b) * a;
-            let rgb = if frame.deep {
-                let sample = |s: &[u8]| u16::from_le_bytes([s[0], s[1]]) as f32;
-                before.chunks_exact(2).zip(frame.rgb.chunks_exact(2)).flat_map(|(b, c)| (mix(sample(b), sample(c)).round() as u16).to_le_bytes()).collect()
-            } else {
-                before.iter().zip(&frame.rgb).map(|(&b, &c)| mix(b as f32, c as f32).round() as u8).collect()
-            };
+            // By frame centres: the first frame already a little in.
+            let before = Frame { rgb: before, ..*frame };
+            let rgb = self.transition.mix((n as f64 + 0.5) / self.head as f64, &before, frame);
             return self.out.write(&Frame { width: frame.width, height: frame.height, rgb, deep: frame.deep });
         }
         self.out.write(frame)

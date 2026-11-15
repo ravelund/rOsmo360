@@ -1,6 +1,6 @@
 # rOsmo360
 
-A 360° video player and editor for **DJI Osmo 360** footage, written in Rust. It plays the camera's `.OSV` files directly: it stitches the two fisheye lenses, stabilises with the camera's gyro data and lets you look around freely, without going through DJI Studio. Then you can cut clips together on a timeline, with ordinary videos and photos beside them, keyframe the camera's view, add crossfades, music, colour effects, titles and logos, and export a framed video.
+A 360° video player and editor for **DJI Osmo 360** footage, written in Rust. It plays the camera's `.OSV` files directly: it stitches the two fisheye lenses, stabilises with the camera's gyro data and lets you look around freely, without going through DJI Studio. Then you can cut clips together on a timeline, with ordinary videos and photos beside them, keyframe the camera's view, add transitions, music, colour effects, titles and logos, and export a framed video.
 
 ![rOsmo360 editing a mountain hike: a rock tower under the title "Kyrkja, July 2026" with a small logo in the corner, and below it the view angles and the timeline: a text lane and an overlay lane, cuts from four clips with crossfades, thumbnails and keyframe rows, and a soundtrack lane with its waveform and volume line](docs/screenshot.png)
 
@@ -47,7 +47,7 @@ I vibed this tool primarily for Linux, since I couldn't find anything close to D
 - **Follow the stick**: a keyframe can follow the selfie stick, and so whoever holds it, for a third-person shot that frames you automatically. It works from the camera's motion data, even straight below the camera.
 - **Follow a subject by colour**: `rosmo360 track` finds a coloured subject (a friend's jacket, a tent) through a clip, and keyframes can follow it the same way.
 - **Stabilisation per cut**: one cut world-locked, the next following the horizon.
-- **Crossfades** between cuts, picture and sound: overlap two cuts and the first dissolves into the second. Select a cut in the overlap to frame it on its own.
+- **Transitions** between cuts, picture and sound: a dissolve (crossfade), a dip to black or white, a wipe, a push, a slide, or a spin that whips the 360° view round into the next cut with motion blur. Select a cut in the overlap to frame it on its own.
 - **Music**: songs on a lane of their own under the edit, to move, trim, split and crossfade; it fades out by itself where the video ends. A project can start from a song.
 - **Sound levels**: one slider for the clips' sound and one for the music, plus volume points over time on the music and on each cut's own sound, to dip the music under talk or tame the wind.
 - **Colour effects**, keyframed per cut: exposure (brightening rolls highlights off instead of burning them out), contrast, highlights and shadows, temperature and tint (with a white-balance eyedropper), saturation, vibrance, a vignette and opacity, in a side panel, after the cut's LUT and its strength (keyframed too, so a LUT can fade in). Plus fades from and to black for the whole edit.
@@ -111,7 +111,7 @@ Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md), and [AGENTS.md](AGENTS.md)
 
 ## Usage
 
-The **[user guide](docs/user-guide.md)** walks through the whole app with screenshots: watching, projections, stabilisation, the timeline, keyframes, crossfades, music, effects, titles and overlays, projects and exporting.
+The **[user guide](docs/user-guide.md)** walks through the whole app with screenshots: watching, projections, stabilisation, the timeline, keyframes, transitions, music, effects, titles and overlays, projects and exporting.
 
 ```sh
 rosmo360 play                 # opens the player; use Open clips… or Ctrl+O
@@ -149,8 +149,8 @@ In the player:
 | Split the cut at the playhead | C, or ✂ |
 | Trim / move a cut | Drag its edge / drag the cut on the timeline |
 | Delete the selected cut | Shift+Delete, or 🗑 |
-| Crossfade into a cut | Select it and click the crossfade button (1 s, again to remove), or Shift-drag its left edge for any length |
-| Frame the cut coming in during a crossfade | Pause in the overlap and click that cut |
+| Transition into a cut | Select it and press T (or the transitions button): pick dissolve, dip, wipe, push, slide or spin, its direction and length; or Shift-drag its left edge for a dissolve of any length |
+| Frame the cut coming in during a transition | Pause in the overlap and click that cut |
 | Add music | The note with a plus (top bar or start screen); it goes after the music already there |
 | Move / trim / split / delete a song | Drag it (it snaps edge to edge) / drag its edges / C / Delete, with it selected; Shift-drag onto another song to crossfade them |
 | Mix levels | **Clip sound** and **Music** in the Audio panel (the speaker) |
@@ -164,7 +164,7 @@ In the player:
 | Save / open / new project | Ctrl+S (Ctrl+Shift+S: save as) / Ctrl+Shift+O / Ctrl+N |
 | Export the edit | The export button, an arrow out of a tray, or Ctrl+E: the Export panel, with the resolution (720p–2160p), the format (MP4, or 10-bit DNxHR HQX and PCM in `.mov`, which DaVinci Resolve's free Linux version can read) and **A file per cut** ("project - 001" and on, the music as WAVs, for another editor; **Graded** gives them their LUTs and effects); the aspect lock sets the shape, 16:9 when free |
 
-A project saves the cuts with their keyframes, crossfades, effects and volume points, the music, the levels, the titles and overlays, the fades and the aspect lock, in the same file `rosmo360 export` renders (see below). Clips in the project's folder are stored by relative path, so the folder can be moved as a whole.
+A project saves the cuts with their keyframes, transitions, effects and volume points, the music, the levels, the titles and overlays, the fades and the aspect lock, in the same file `rosmo360 export` renders (see below). Clips in the project's folder are stored by relative path, so the folder can be moved as a whole.
 
 Command-line tools:
 
@@ -214,7 +214,8 @@ To join cuts from one or more clips, write a project file and export it. A cut's
 
 A cut may also have:
 
-- `crossfade`: seconds it overlaps the cut before, dissolving in from it (the edit is that much shorter);
+- `crossfade`: seconds it overlaps the cut before, coming in from it through a transition (the edit is that much shorter);
+- `transition`: how it comes in through that overlap: `"dissolve"` (the default, a crossfade), `"dip-black"`, `"dip-white"`, `"wipe-left"`, `"push-left"`, `"slide-left"` (also `-right`, `-up`, `-down`: the way the line or the picture moves) or `"spin-left"` / `"spin-right"` (the way the camera whips round). The sound crossfades whichever it is;
 - `volume`: its own sound's level over time, `[{"t": 12, "volume": -10}, …]` in clip time and dB, straight lines between points;
 - `effects`: colour keyframes in clip time, each holding the whole look (fields left out are 0, opacity and lut 1): `exposure` (stops, −3…3), `contrast`, `highlights`, `shadows`, `temperature`, `tint`, `saturation`, `vibrance` (−1…1), `vignette` (0…1), `opacity` (0…1, the rest black), `lut` (how much of the cut's LUT, 0…1), and `ease`;
 - `lut`: a LUT applied before the effects: the name of one in the player's LUT library (`"DJI Osmo 360 D-Log M to Rec.709 V1"`, kept in rOsmo360's settings folder under `luts/`), or a `.cube` file, relative to the project. A missing one leaves the cut as filmed, with a warning.
@@ -230,7 +231,8 @@ And the edit as a whole: `sound` (the clips' level in dB), `fades` (seconds from
      "effects": [{"t": 28, "exposure": 0.2, "highlights": -0.3, "vibrance": 0.2}]},
     {"input": "CAM_0043.OSV", "in": 5, "out": 12, "crossfade": 1,
      "volume": [{"t": 8, "volume": 0}, {"t": 9, "volume": -12}]},
-    {"input": "CAM_0046.OSV", "in": 3, "out": 10, "lut": "DJI Osmo 360 D-Log M to Rec.709 V1",
+    {"input": "CAM_0046.OSV", "in": 3, "out": 10, "crossfade": 0.8, "transition": "spin-right",
+     "lut": "DJI Osmo 360 D-Log M to Rec.709 V1",
      "effects": [{"t": 3, "lut": 0}, {"t": 5}]}
   ],
   "sound": {"volume": -6},

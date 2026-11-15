@@ -348,6 +348,23 @@ pub fn flat(frame: &Frame, (w, h): (usize, usize), camera: &crate::view::Camera)
     Frame { width: w, height: h, rgb, deep: false }
 }
 
+/// The mean of 8-bit `frames` alike in size (one comes back as it is): a
+/// blur's sharp views as one picture.
+pub fn average(frames: impl Iterator<Item = Frame>) -> Frame {
+    let mut frames = frames.peekable();
+    let first = frames.next().expect("a frame to average");
+    if frames.peek().is_none() {
+        return first;
+    }
+    let mut sum: Vec<u32> = first.rgb.iter().map(|&v| v as u32).collect();
+    let mut n = 1;
+    for f in frames {
+        sum.iter_mut().zip(&f.rgb).for_each(|(s, &v)| *s += v as u32);
+        n += 1;
+    }
+    Frame { rgb: sum.iter().map(|&s| ((s + n / 2) / n) as u8).collect(), ..first }
+}
+
 fn sample(f: &Frame, u: f64, v: f64) -> [f64; 3] {
     let x0 = (u - 0.5).floor();
     let y0 = (v - 0.5).floor();

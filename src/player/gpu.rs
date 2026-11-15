@@ -2,9 +2,10 @@
 //! the widget's rectangle, sharing iced's wgpu device. `Pipeline` doesn't
 //! need iced: `render.rs` drives it on a device of its own for export.
 //!
-//! Through a crossfade between cuts the pipeline draws a second layer, the
-//! incoming cut, over the first with a blend constant: each layer keeps its
-//! own uniforms and pictures, so neither re-uploads while both play.
+//! Through a transition between cuts the pipeline draws a second layer, the
+//! incoming cut over the outgoing one, each as its `transition::Part` says
+//! (how much of it shows, where it sits): each layer keeps its own uniforms
+//! and pictures, so neither re-uploads while both play.
 //!
 //! The overlays then go on top, each a turned quad of its picture
 //! (`overlay.wgsl`), blended premultiplied.
@@ -16,6 +17,7 @@ use crate::exposure::{self, BINS, FADE_FROM, FADE_TO, Gains, Seam};
 use crate::grade::Grade;
 use crate::overlay::{Picture, Place, Quad};
 use crate::stitch::{Lens, M3};
+use crate::transition::Part;
 use crate::view::Camera;
 use bytemuck::{Pod, Zeroable};
 use iced::wgpu;
@@ -99,6 +101,8 @@ struct Uniforms {
     /// The LUT before the effects (`lut.rs`): (1 if on, strength, size, 0),
     /// its domain's low and high ends.
     lut: [[f32; 4]; 3],
+    /// The layer in a transition (`transition::Part::uniforms`).
+    trans: [[f32; 4]; 4],
 }
 
 /// Numbers rigs and frames so each is uploaded once however often it is drawn.
@@ -214,20 +218,25 @@ pub struct Primitive {
     pub camera: Camera,
     /// rig_from_view at instants spread over the readout.
     pub rig_from_view: Vec<M3>,
-    /// Through a crossfade: the next cut, drawn over this one.
+    /// Its layer in a transition; whole (`Part::default`) outside one.
+    pub part: Part,
+    /// Through a transition: the other cut of it.
     pub incoming: Option<Incoming>,
     /// The overlays showing, lowest first.
     pub overlays: Vec<OverlayDraw>,
 }
 
-/// The cut crossfading in: its own picture and framing, and how far in it
-/// is (0..1).
+/// The other cut of a transition: its own picture, framing and layer, and
+/// whether it's the one drawn under (the outgoing cut, when the incoming
+/// one is the cut being played or edited).
+#[derive(Clone)]
 pub struct Incoming {
     pub rig: Arc<Rig>,
     pub shown: Arc<Shown>,
     pub camera: Camera,
     pub rig_from_view: Vec<M3>,
-    pub mix: f32,
+    pub part: Part,
+    pub under: bool,
 }
 
 impl std::fmt::Debug for Primitive {
@@ -243,15 +252,16 @@ struct Plane {
 
 pub struct Pipeline {
     pipeline: wgpu::RenderPipeline,
-    /// The same, blending over what's drawn by the pass's blend constant.
+    /// The same, blending over what's drawn by the alpha it gives.
     blend: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     srgb: bool,
-    /// The cut shown, and the one crossfading in over it.
+    /// The cut shown, and the other cut of a transition.
     layers: [Layer; 2],
-    /// How far the second layer is in, if it's drawn.
-    mix: Option<f32>,
+    /// Whether the second layer is drawn, and if so whether under the
+    /// first.
+    second: Option<bool>,
     overlay: wgpu::RenderPipeline,
     overlay_layout: wgpu::BindGroupLayout,
     /// Kept between frames; the first `overlays` are drawn.
@@ -387,9 +397,11 @@ impl Pipeline {
             })
         };
         let pipeline = make(None);
-        // new × k + old × (1 − k), k the blend constant.
-        let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Constant, dst_factor: wgpu::BlendFactor::OneMinusConstant, operation: wgpu::BlendOperation::Add };
-        let blend = make(Some(wgpu::BlendState { color: over, alpha: over }));
+        // new × a + old × (1 − a), a the alpha the shader gives the pixel;
+        // the target's own alpha stays as the first layer left it.
+        let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
+        let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let blend = make(Some(wgpu::BlendState { color: over, alpha: keep }));
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -413,7 +425,7 @@ impl Pipeline {
             Layer { uniforms, slots, deep, masks, lut, lut_id: None, flow, bind_group, lens_u: [LensU::zeroed(); 2], rig_id: 0, shown_id: 0 }
         });
         let (overlay, overlay_layout) = overlay_pipeline(device, format);
-        Pipeline { pipeline, blend, layout, sampler, srgb: format.is_srgb(), layers, mix: None, overlay, overlay_layout, overlay_slots: Vec::new(), overlays: 0, dither: None }
+        Pipeline { pipeline, blend, layout, sampler, srgb: format.is_srgb(), layers, second: None, overlay, overlay_layout, overlay_slots: Vec::new(), overlays: 0, dither: None }
     }
 
     /// Gets `overlays` ready to draw over the view (`size` pixels at
@@ -461,14 +473,24 @@ impl Pipeline {
     /// uploaded only when they change.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rig: &Rig, shown: &Shown, camera: &Camera, rig_from_view: &[M3], size: [f32; 2], origin: [f32; 2]) {
-        self.mix = None;
+        self.second = None;
         self.overlays = 0;
-        self.prepare_layer(0, device, queue, rig, shown, camera, rig_from_view, size, origin);
+        self.prepare_layer(0, device, queue, rig, shown, camera, rig_from_view, size, origin, &Part::default(), false);
     }
 
-    /// Gets layer `layer` ready (see `prepare_frame`).
+    /// Gets a transition's two cuts ready to draw: the first as its `part`
+    /// has it, with `other`.
     #[allow(clippy::too_many_arguments)]
-    fn prepare_layer(&mut self, layer: usize, device: &wgpu::Device, queue: &wgpu::Queue, rig: &Rig, shown: &Shown, camera: &Camera, rig_from_view: &[M3], size: [f32; 2], origin: [f32; 2]) {
+    pub fn prepare_pair(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rig: &Rig, shown: &Shown, camera: &Camera, rig_from_view: &[M3], part: &Part, other: &Incoming, size: [f32; 2], origin: [f32; 2]) {
+        self.prepare_layer(0, device, queue, rig, shown, camera, rig_from_view, size, origin, part, other.under);
+        self.prepare_layer(1, device, queue, &other.rig, &other.shown, &other.camera, &other.rig_from_view, size, origin, &other.part, !other.under);
+        self.second = Some(other.under);
+    }
+
+    /// Gets layer `layer` ready (see `prepare_frame`), as `part` of a
+    /// transition has it, drawn `over` the other layer or not.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_layer(&mut self, layer: usize, device: &wgpu::Device, queue: &wgpu::Queue, rig: &Rig, shown: &Shown, camera: &Camera, rig_from_view: &[M3], size: [f32; 2], origin: [f32; 2], part: &Part, over: bool) {
         let (srgb, dither) = (self.srgb, self.dither);
         let (layout, sampler) = (&self.layout, &self.sampler);
         let l = &mut self.layers[layer];
@@ -488,6 +510,7 @@ impl Pipeline {
         u.misc = [steps as f32, srgb as u8 as f32, origin[0], origin[1]];
         u.lenses = l.lens_u;
         u.grade = camera.grade.uniforms();
+        u.trans = part.uniforms(over, camera.blur);
         if let Some(id) = camera.lut {
             let lut = crate::lut::get(id);
             if l.lut_id != Some(id) {
@@ -551,14 +574,17 @@ impl Pipeline {
             occlusion_query_set: None,
         });
         pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+        let (first, over) = match self.second {
+            Some(true) => (1, Some(0)),
+            Some(false) => (0, Some(1)),
+            None => (0, None),
+        };
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.layers[0].bind_group, &[]);
+        pass.set_bind_group(0, &self.layers[first].bind_group, &[]);
         pass.draw(0..3, 0..1);
-        if let Some(k) = self.mix {
-            let k = k as f64;
+        if let Some(over) = over {
             pass.set_pipeline(&self.blend);
-            pass.set_blend_constant(wgpu::Color { r: k, g: k, b: k, a: k });
-            pass.set_bind_group(0, &self.layers[1].bind_group, &[]);
+            pass.set_bind_group(0, &self.layers[over].bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         if self.overlays > 0 {
@@ -642,8 +668,7 @@ impl shader::Primitive for Primitive {
         let (size, origin) = ([px.width, px.height], [px.x, px.y]);
         p.prepare_frame(device, queue, &self.rig, &self.shown, &self.camera, &self.rig_from_view, size, origin);
         if let Some(i) = &self.incoming {
-            p.prepare_layer(1, device, queue, &i.rig, &i.shown, &i.camera, &i.rig_from_view, size, origin);
-            p.mix = Some(i.mix);
+            p.prepare_pair(device, queue, &self.rig, &self.shown, &self.camera, &self.rig_from_view, &self.part, i, size, origin);
         }
         let target = viewport.physical_size();
         p.prepare_overlays(device, queue, &self.overlays, size, origin, [target.width as f32, target.height as f32]);

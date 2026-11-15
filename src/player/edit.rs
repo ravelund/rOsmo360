@@ -200,7 +200,8 @@ impl Edit {
 
     /// Sets the crossfade into cut `i`, within what the cuts either side
     /// allow.
-    pub fn set_crossfade(&mut self, i: usize, seconds: f64) {
+    /// The longest cut `i` can overlap the cut before it.
+    pub fn most_crossfade(&self, i: usize) -> f64 {
         let mut max = crate::project::max_crossfade(&self.cuts, i);
         // Leaving the cut what the next one's crossfade takes of its end,
         // or three cuts overlapped and the next one's was dropped (and the
@@ -208,7 +209,11 @@ impl Edit {
         if let (Some(c), Some(next)) = (self.cuts.get(i), self.cuts.get(i + 1)) {
             max = max.min(c.len() - next.crossfade - crate::project::SOLO);
         }
-        let max = max.max(0.0);
+        max.max(0.0)
+    }
+
+    pub fn set_crossfade(&mut self, i: usize, seconds: f64) {
+        let max = self.most_crossfade(i);
         if let Some(c) = self.cuts.get_mut(i) {
             c.crossfade = seconds.clamp(0.0, max);
         }
@@ -234,7 +239,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn cut(name: &str, start: f64, end: f64) -> Cut {
-        Cut { input: PathBuf::from(name), start, end, keyframes: Default::default(), stabilize: None, note: None, volume: Vec::new(), crossfade: 0.0, effects: Vec::new(), lut: None, old_lut_strength: None, flat: false, lut_applied: None }
+        Cut { input: PathBuf::from(name), start, end, keyframes: Default::default(), stabilize: None, note: None, volume: Vec::new(), crossfade: 0.0, transition: Default::default(), effects: Vec::new(), lut: None, old_lut_strength: None, flat: false, lut_applied: None }
     }
 
     fn edit() -> Edit {

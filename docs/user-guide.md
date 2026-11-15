@@ -1,6 +1,6 @@
 # rOsmo360 user guide
 
-rOsmo360 plays and edits 360° video from the **DJI Osmo 360**. It reads the camera's `.OSV` files directly, stitches the two lenses, keeps the horizon level, and lets you look around, cut clips together, move the camera's view with keyframes, add crossfades, music, colour effects, titles and logos, and export a finished video. Footage filmed in D-Log M is recognised and turned into normal colours with DJI's LUT. Ordinary videos (from a phone, a drone or an action camera) and photos go in the same edit.
+rOsmo360 plays and edits 360° video from the **DJI Osmo 360**. It reads the camera's `.OSV` files directly, stitches the two lenses, keeps the horizon level, and lets you look around, cut clips together, move the camera's view with keyframes, add transitions, music, colour effects, titles and logos, and export a finished video. Footage filmed in D-Log M is recognised and turned into normal colours with DJI's LUT. Ordinary videos (from a phone, a drone or an action camera) and photos go in the same edit.
 
 Part 1 walks through the app itself; everything there is done with the mouse and keyboard. Part 2 covers the command line, for batches, scripts and a few extra tools. For building rOsmo360 from source, see the [README](../README.md).
 
@@ -15,7 +15,7 @@ Part 1: Using rOsmo360
 5. [Stabilisation](#5-stabilisation)
 6. [Building an edit on the timeline](#6-building-an-edit-on-the-timeline)
 7. [Keyframes: moving the camera](#7-keyframes-moving-the-camera)
-8. [Crossfades](#8-crossfades)
+8. [Transitions and crossfades](#8-transitions-and-crossfades)
 9. [Music and sound](#9-music-and-sound)
 10. [Effects: colour, opacity and fades](#10-effects-colour-opacity-and-fades)
 11. [Titles and overlays](#11-titles-and-overlays)
@@ -92,13 +92,13 @@ From top to bottom:
 
 3. **The transport row**: play, photos, the time, the view's keyframes, the cut tools, timeline zoom, and sound.
 
-   ![The transport row: play, save view, save 360°, the time, add and delete keyframe, the Ease and Follow pickers, the eyedropper, the FOV slider, reset view, the Effects panel, crossfade, split, delete, undo, redo, the timeline zoom, and the speaker](guide/transport.png)
+   ![The transport row: play, save view, save 360°, the time, add and delete keyframe, the Ease and Follow pickers, the eyedropper, the FOV slider, reset view, the Effects panel, transitions, split, delete, undo, redo, the timeline zoom, and the speaker](guide/transport.png)
 
-   After the eyedropper come the **FOV** slider (the zoom) and **reset view** (a turn-back arrow), then **Effects** (three sliders; opens the [Effects panel](#10-effects-colour-opacity-and-fades)) and **crossfade** (two overlapping frames; see [Crossfades](#8-crossfades)). The **speaker** on the right opens the [Audio panel](#9-music-and-sound); it shows a cross while muted.
+   After the eyedropper come the **FOV** slider (the zoom) and **reset view** (a turn-back arrow), then **Effects** (three sliders; opens the [Effects panel](#10-effects-colour-opacity-and-fades)) and **transitions** (two overlapping frames; see [Transitions](#8-transitions-and-crossfades)). The **speaker** on the right opens the [Audio panel](#9-music-and-sound); it shows a cross while muted.
 
 4. **The view angles**: the view as numbers, for typing a framing in exactly (see [Typing the view](#typing-the-view)). Settings can hide this row.
 
-5. **The timeline**, from the top: the **Text** lane and the **Overlay** lane (once they have something in them, each with its own keyframe rows), the cuts of your edit with thumbnails, their **Effects** and **View** keyframe rows, the seek bar, and the music lane.
+5. **The timeline**, from the top: the seek bar, the **Text** lane and the **Overlay** lane (once they have something in them, each with its own keyframe rows), the cuts of your edit with thumbnails, their **Effects** and **View** keyframe rows, and the music lane.
 
    ![The timeline: a teal title block on the Text lane and an orange logo block on the Overlay lane, each with Effects and Motion rows; four cuts with thumbnails and labels such as "0045 · 12.0 s" and "0026 · 10.0 s · world lock", crossed boxes where cuts crossfade and a light-blue sound line; the Effects and View rows with keyframe marks; the seek bar; and a green soundtrack lane with its waveform and an orange volume line](guide/timeline.png)
 
@@ -178,7 +178,7 @@ An *edit* is a row of *cuts*, each a stretch of one clip, played one after anoth
 - **Delete**: select it and press **Shift+Delete**, or 🗑.
 - **Undo / redo**: Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y).
 
-Playback runs through the cuts in order, straight on from one into the next, even when the next one comes from a different clip: rOsmo360 gets the next cut ready a few seconds ahead, so the change is smooth. To dissolve from one cut into the next instead of cutting, see [Crossfades](#8-crossfades).
+Playback runs through the cuts in order, straight on from one into the next, even when the next one comes from a different clip: rOsmo360 gets the next cut ready a few seconds ahead, so the change is smooth. To dissolve, wipe or spin from one cut into the next instead of cutting, see [Transitions](#8-transitions-and-crossfades).
 
 Each cut shows thumbnails of its footage, the view straight ahead. They fill in a moment after a clip loads; a long clip takes a few seconds the first time.
 
@@ -213,7 +213,7 @@ With a long edit, short cuts and close keyframes get narrow. Zoom in:
 
 ![The timeline zoomed in on the end of the first cut and the start of the second: rock thumbnails, the crossfade's X, the second cut's light-blue sound line, the View row's keyframe marks, the seek bar, and a scrollbar underneath](guide/timeline-zoomed.png)
 
-When zoomed in, a scrollbar appears under the seek bar. Drag it, use Shift+scroll, or scroll sideways on a touchpad to move along. While playing, the timeline scrolls along to keep the playhead in sight.
+When zoomed in, a scrollbar appears at the bottom of the timeline. Drag it, use Shift+scroll, or scroll sideways on a touchpad to move along. While playing, the timeline scrolls along to keep the playhead in sight.
 
 ## 7. Keyframes: moving the camera
 
@@ -291,29 +291,40 @@ To follow **someone or something else**, such as a friend in a red jacket, track
 
 Pick something with a strong colour that nothing big nearby shares: sky, grass, rock and snow won't track. Small things that swing, like legs, follow less steadily than a jacket.
 
-## 8. Crossfades
+## 8. Transitions and crossfades
 
-A crossfade dissolves one cut into the next, picture and sound together, instead of cutting straight across. The second cut starts a little before the first ends, and they blend over that overlap.
+A transition takes one cut into the next over a moment, picture and sound together, instead of cutting straight across. The second cut starts a little before the first ends, and through that overlap both show. The plainest transition is the crossfade, a dissolve.
 
 ![The middle of a crossfade: a grey rock face fading into a snowy mountainside under a blue sky and the sun](guide/crossfade.jpg)
 
-- **Add one**: select the later of the two cuts and click **crossfade** (two overlapping frames) in the transport row. It overlaps the cut before by 1 second. Click it again to take the crossfade away.
-- **Make it longer or shorter**: hold **Shift** and drag the later cut's left edge. Further left is a longer crossfade, back right a shorter one. (Without Shift, the same drag trims the cut.)
+Select the later of the two cuts and click **transitions** (two overlapping frames) in the transport row, or press **T**: the Transitions panel opens at the left of the view. With no cut selected it shows the cut that's playing. Each style is an icon; hover over one for its name.
+
+- **None**: a plain cut.
+- **Dissolve**: the first cut fades into the second (the crossfade).
+- **Dip to black**, **Dip to white**: the first cut fades out to black or white and the second fades in from it.
+- **Wipe**: a soft line sweeps across the picture, uncovering the second cut behind it.
+- **Push**: the second cut pushes the first out of the frame.
+- **Slide**: the second cut slides in over the first, which stays where it is.
+- **Spin**: the camera whips round out of the first cut and arrives in the second, with motion blur hiding the change. On 360° clips it's a real turn of the view; an ordinary video or photo is swept out of the frame instead.
+
+Picking a style gives the cut a 1 second transition. Wipe, push, slide and spin get a **Direction** (a spin turns left or right). **Length** sets how long it lasts, and **to all cuts** (stacked frames with a plus) gives every cut in the edit the same transition. Whatever the style, the sound crossfades.
+
+- **Make it longer or shorter on the timeline**: hold **Shift** and drag the later cut's left edge. Further left is a longer transition, back right a shorter one. (Without Shift, the same drag trims the cut.) On a plain cut this makes a dissolve.
 - On the timeline the overlap is marked with an **X**.
 
 ![The timeline zoomed in: the second cut overlapping the end of the first, with an X over the overlap, and the soundtrack lane below](guide/timeline-zoomed.png)
 
-The edit gets shorter by each crossfade, since the cuts overlap. No extra footage is needed: the crossfade uses the end of the first cut and the start of the second, as you trimmed them. It can't be longer than either cut allows, and trimming a cut shorter shortens its crossfade to fit. The first cut has none, as nothing comes before it.
+The edit gets shorter by each transition, since the cuts overlap. No extra footage is needed: it uses the end of the first cut and the start of the second, as you trimmed them. It can't be longer than either cut allows, and trimming a cut shorter shortens its transition to fit. The first cut has none, as nothing comes before it.
 
-**Framing the cut that comes in.** In the overlap, the playhead belongs to the earlier cut, so keyframes and looking around act on that one. To work on the later cut there, click it (on the X, the later cut is on top), with playback paused: the view shows that cut on its own, and K, Delete, `[` `]`, the Ease and Follow pickers and looking around all act on it. Click the earlier cut to switch back. Playing always shows the blend.
+**Framing the cut that comes in.** In the overlap, the playhead belongs to the earlier cut, so keyframes and looking around act on that one. To work on the later cut there, click it (on the X, the later cut is on top), with playback paused: the view shows that cut on its own, and K, Delete, `[` `]`, the Ease and Follow pickers and looking around all act on it. Click the earlier cut to switch back. Playing always shows the transition, and so does scrubbing while the Transitions panel is open, so you can drag through a transition to judge it.
 
-During a crossfade the player decodes both cuts at once. On the **Proxy (LRF)** source that's smooth; at OSV 1920 or full size it may lag on most computers, but the export is never affected.
+During a transition the player decodes both cuts at once. On the **Proxy (LRF)** source that's smooth; at OSV 1920 or full size it may lag on most computers, but the export is never affected.
 
 ## 9. Music and sound
 
 ### Adding music
 
-Click **add music** (the note with a plus) in the top bar, or **Add music…** on the start screen, and pick a song: MP3, FLAC, WAV, M4A, AAC, Ogg or Opus. It goes in the **music lane** under the seek bar, after any music already there, with its waveform drawn in it.
+Click **add music** (the note with a plus) in the top bar, or **Add music…** on the start screen, and pick a song: MP3, FLAC, WAV, M4A, AAC, Ogg or Opus. It goes in the **music lane** under the cuts, after any music already there, with its waveform drawn in it.
 
 You can start a project from a song alone: it sets the length to fill, and the timeline shows it running on past the video until you've added enough clips. The export always ends with the last cut; music still playing there fades out over its last 3 seconds by itself.
 
@@ -477,7 +488,7 @@ Exports and saved views take the same shape. With **Free**, exports are 16:9.
 
 ## 13. Projects
 
-A project saves the edit: the cuts, their keyframes, stabilisation, crossfades, effects and sound levels, the music, the titles and overlays, the fades, and the aspect lock.
+A project saves the edit: the cuts, their keyframes, stabilisation, transitions, effects and sound levels, the music, the titles and overlays, the fades, and the aspect lock.
 
 - **Save**: Ctrl+S, or the diskette. **Save as**: Ctrl+Shift+S, or the diskette with a pencil.
 - **Open**: Ctrl+Shift+O, or the folder.
@@ -506,11 +517,11 @@ Click **export** (an arrow out of a tray) in the top bar, or press **Ctrl+E**, f
 3. **Clips**: tick **A file per cut** to write each cut to its own file instead of one video, for finishing in another editor (see below).
 4. Click **Export…** and choose where to save.
 
-The export renders the whole edit at full resolution, with the sound joined across the cuts and the music mixed in. Each cut uses its own keyframes, stabilisation and effects; crossfades, volume points, levels and the fades are applied; titles and overlays are drawn in; and the export follows the rolling-shutter setting. Progress shows in the top bar, with a crossed circle to stop it; a cancelled export leaves no half-finished file. Your choices are remembered.
+The export renders the whole edit at full resolution, with the sound joined across the cuts and the music mixed in. Each cut uses its own keyframes, stabilisation and effects; transitions, volume points, levels and the fades are applied; titles and overlays are drawn in; and the export follows the rolling-shutter setting. Progress shows in the top bar, with a crossed circle to stop it; a cancelled export leaves no half-finished file. Your choices are remembered.
 
 Exports render on the GPU. On an RTX 3090 that's about 21 frames a second at 1080p, so a one-minute edit takes about a minute and a half. You can keep using the player while it runs. An MP4's colours are rounded to 8 bits at the very end with a touch of fine grain (dithering), so smooth skies don't break into bands; the Resolve format keeps 10 bits instead.
 
-**A file per cut** (Clips) is for finishing the edit elsewhere. Export then asks for a folder, and the files are named after the project: `My hike - 001.mp4`, `My hike - 002.mp4` and so on, in timeline order. Each piece of music is written beside them as `My hike - music 001.wav` and on (48 kHz, 24-bit). The clips are left for the other editor to finish: no crossfades, fades, sound levels, titles or overlays, and the music unfaded at its own level. **Graded** appears under it: tick it to give the clips their LUTs and effects, or leave it off to have them as shot, to grade in the other editor (D-Log M stays log, for your own LUT there). With the DaVinci Resolve format you get one `.mov` per cut, ready to drop into Resolve.
+**A file per cut** (Clips) is for finishing the edit elsewhere. Export then asks for a folder, and the files are named after the project: `My hike - 001.mp4`, `My hike - 002.mp4` and so on, in timeline order. Each piece of music is written beside them as `My hike - music 001.wav` and on (48 kHz, 24-bit). The clips are left for the other editor to finish: no transitions, fades, sound levels, titles or overlays, and the music unfaded at its own level. **Graded** appears under it: tick it to give the clips their LUTs and effects, or leave it off to have them as shot, to grade in the other editor (D-Log M stays log, for your own LUT there). With the DaVinci Resolve format you get one `.mov` per cut, ready to drop into Resolve.
 
 ## 15. Saving photos
 
@@ -559,6 +570,7 @@ The ✕ at the top closes the panel.
 | Delete | Delete the keyframe here (or the selected song, volume point, title or overlay) |
 | C | Split the cut at the playhead (or the selected song) |
 | G | Open or close the Effects panel |
+| T | Open or close the Transitions panel |
 | Ctrl+E | Open or close the Export panel |
 | Ctrl+, | Open or close the Settings panel |
 | Shift+Delete | Delete the selected cut |
@@ -572,7 +584,7 @@ The ✕ at the top closes the panel.
 | Esc | Cancel drawing a colour box |
 | Shift (turning an overlay) | Turn in 15° steps |
 
-With the mouse: drag in the view to look around, right-drag to roll, scroll to zoom. On the timeline, click to seek, click a keyframe mark to jump to it, drag any mark (view, effects or motion) to retime it, right-click a cut, song or picture for its file information, drag a cut to move it or its edges to trim it, and scroll to zoom. **Shift**-drag a cut's left edge to set its crossfade, or a song onto its neighbour to crossfade them; **Ctrl**-click a cut or the music lane to add a volume point. Paused, drag a selected title or overlay in the view to move it, a corner to size it and the knob above it to turn it.
+With the mouse: drag in the view to look around, right-drag to roll, scroll to zoom. On the timeline, click to seek, click a keyframe mark to jump to it, drag any mark (view, effects or motion) to retime it, right-click a cut, song or picture for its file information, drag a cut to move it or its edges to trim it, and scroll to zoom. **Shift**-drag a cut's left edge to set its transition's length, or a song onto its neighbour to crossfade them; **Ctrl**-click a cut or the music lane to add a volume point. Paused, drag a selected title or overlay in the view to move it, a corner to size it and the knob above it to turn it.
 
 Keys only work while you're not typing: in the Text panel's box or a view angle, the keys type.
 
@@ -661,7 +673,7 @@ rosmo360 render clip.OSV -s 48 -d 12 -w 3840 --stabilize horizon -o out.mp4
 rosmo360 stitch clip.OSV -t 10 -w 4096 --stabilize horizon -o frame.png
 ```
 
-Projects are small JSON files you can also write or change by hand; the [README](../README.md#usage) describes the project and reframe formats, including cut notes (`"note": "summit arrival"`), per-cut stabilisation, following keyframes, crossfades, effects, LUTs, volume points, music, titles, overlays and fades.
+Projects are small JSON files you can also write or change by hand; the [README](../README.md#usage) describes the project and reframe formats, including cut notes (`"note": "summit arrival"`), per-cut stabilisation, following keyframes, transitions, effects, LUTs, volume points, music, titles, overlays and fades.
 
 ## 20. The clip cache
 

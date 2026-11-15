@@ -2,6 +2,7 @@ mod align;
 mod cache;
 mod check;
 mod dissolve;
+mod transition;
 mod dji;
 mod exposure;
 mod grade;
@@ -92,7 +93,7 @@ enum Cmd {
     /// scroll: zoom · space: play/pause · , .: frame step · S: stabilisation ·
     /// R: rolling shutter · P: projection · M: mute · 0: reset view · F: fullscreen · Ctrl+O: open ·
     /// K: keyframe the view here · [ ]: previous/next keyframe · Del: delete keyframe · J: its ease ·
-    /// C: split the cut · Shift+Del: delete the selected cut · Ctrl+Z / Ctrl+Shift+Z: undo / redo ·
+    /// C: split the cut · T: transitions · Shift+Del: delete the selected cut · Ctrl+Z / Ctrl+Shift+Z: undo / redo ·
     /// Ctrl+= / Ctrl+− / Ctrl+0: zoom the timeline in / out / to the whole edit (or scroll on it)
     Play {
         /// Clips to open at start, one cut each in this order, or a saved
@@ -736,7 +737,7 @@ impl Pipeline {
                     stitch::flat(picture, size, &view::View::home(view::Projection::Perspective).camera())
                 }
                 Shot::View { ref camera, size } => {
-                    let mut frame = stitch::flat(picture, size, camera);
+                    let mut frame = stitch::average(camera.taps().iter().map(|c| stitch::flat(picture, size, c)));
                     grade_frame(&mut frame, camera);
                     frame
                 }
@@ -760,8 +761,12 @@ impl Pipeline {
         match *shot {
             Shot::Equirect(width) => stitch::equirect(&self.lenses, frames, width, self.only, &views, &seam),
             Shot::View { ref camera, size: (w, h) } => {
-                let ray = |x: f64, y: f64| stitch::apply(camera.user, camera.ray(w as f64 / h as f64, [x / w as f64 * 2.0 - 1.0, y / h as f64 * 2.0 - 1.0]));
-                let mut frame = stitch::render(&self.lenses, frames, (w, h), ray, self.only, &views, &seam);
+                // A spin's blur is its views averaged, before the look, as
+                // the shader does.
+                let mut frame = stitch::average(camera.taps().iter().map(|c| {
+                    let ray = |x: f64, y: f64| stitch::apply(c.user, c.ray(w as f64 / h as f64, [x / w as f64 * 2.0 - 1.0, y / h as f64 * 2.0 - 1.0]));
+                    stitch::render(&self.lenses, frames, (w, h), ray, self.only, &views, &seam)
+                }));
                 grade_frame(&mut frame, camera);
                 frame
             }
@@ -1012,7 +1017,7 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
         for (n, &(i, start, frames)) in cuts.clone().zip(&plan[cuts.clone()]) {
             let tail = if n + 1 < cuts.end { overlap[n + 1] } else { 0 };
             let head = if n > cuts.start { overlap[n] } else { 0 };
-            sink.cut(frames, head, tail)?;
+            sink.cut(frames, head, tail, project.cuts[n].transition)?;
             let size = out.size;
             let mut tick = |n: usize| progress(done + n, total);
             // Framed by its keyframes and graded by its effects (in the whole
@@ -1030,6 +1035,10 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
                     c.lut = None;
                 } else if whole {
                     c.grade.black = project.black_at(n, t);
+                }
+                // A file per cut has no transitions, so no spin's turn.
+                if whole {
+                    c = project::spun(&project.cuts, n, t, c);
                 }
                 c
             };
@@ -1232,7 +1241,7 @@ fn run() -> Result<()> {
                 // One clip is a project of one cut.
                 let reframe = framing.reframe()?.unwrap_or_else(|| Reframe::fixed(View::home(Projection::Perspective)));
                 let (start, end) = span(&input, start, duration, Some(&reframe))?;
-                project::Project { aspect: reframe.aspect, cuts: vec![project::Cut { input, start, end, keyframes: reframe.keyframes, stabilize: None, note: None, volume: Vec::new(), crossfade: 0.0, effects: Vec::new(), lut: None, old_lut_strength: None, flat: false, lut_applied: None }], ..Default::default() }
+                project::Project { aspect: reframe.aspect, cuts: vec![project::Cut { input, start, end, keyframes: reframe.keyframes, stabilize: None, note: None, volume: Vec::new(), crossfade: 0.0, transition: Default::default(), effects: Vec::new(), lut: None, old_lut_strength: None, flat: false, lut_applied: None }], ..Default::default() }
             };
             let aspect = aspect.or(project.aspect).unwrap_or(view::Aspect(16, 9));
             let [w, h] = size.unwrap_or_else(|| aspect.size(resolution.short_side())).map(|v| v as usize);

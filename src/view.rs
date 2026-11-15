@@ -117,7 +117,7 @@ impl View {
             half: (self.fov / FLAT_DEGREES / 2.0) as f32,
             roll: self.roll.to_radians() as f32,
         };
-        Camera { user: self.matrix(), zoom: (self.fov.to_radians() / 2.0).tan(), planet: self.planet(), grade: Default::default(), lut: None, crop }
+        Camera { user: self.matrix(), zoom: (self.fov.to_radians() / 2.0).tan(), planet: self.planet(), grade: Default::default(), lut: None, crop, blur: 0.0 }
     }
 
     /// view_from_screen-ray: yaw about +y, then pitch about +x, then roll.
@@ -166,9 +166,32 @@ pub struct Camera {
     pub lut: Option<usize>,
     /// What it shows of an ordinary video instead.
     pub crop: Crop,
+    /// The yaw its shutter smears over, radians: a spin transition's
+    /// motion blur, drawn as `transition::TAPS` views spread across it.
+    pub blur: f64,
 }
 
 impl Camera {
+    /// Turned `angle` radians of yaw from where it looks (an ordinary
+    /// video's picture moved as far the other way, `FLAT_DEGREES` to its
+    /// height), smeared over `blur`: a spin transition's.
+    pub fn spun(self, angle: f64, blur: f64) -> Camera {
+        let (s, c) = angle.sin_cos();
+        let user = mat_mul([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], self.user);
+        let crop = Crop { centre: [self.crop.centre[0] + (angle.to_degrees() / FLAT_DEGREES) as f32, self.crop.centre[1]], ..self.crop };
+        Camera { user, crop, blur, ..self }
+    }
+
+    /// The views a blurred camera is drawn as, each sharp: spread evenly
+    /// across the blur. One, itself, without blur.
+    pub fn taps(&self) -> Vec<Camera> {
+        if self.blur <= 0.0 {
+            return vec![*self];
+        }
+        let n = crate::transition::TAPS;
+        (0..n).map(|i| self.spun(self.blur * ((i as f64 + 0.5) / n as f64 - 0.5), 0.0)).collect()
+    }
+
     /// The view-space ray through screen point `ndc` (−1..1 each way, y down).
     /// The shader's `screen_ray` must match.
     ///
@@ -727,7 +750,7 @@ mod tests {
 
     #[test]
     fn azimuthal_matches_perspective_and_planet() {
-        let cam = |planet| Camera { user: crate::stitch::IDENTITY, zoom: 0.7, planet: Some(planet), grade: Default::default(), lut: None, crop: Default::default() };
+        let cam = |planet| Camera { user: crate::stitch::IDENTITY, zoom: 0.7, planet: Some(planet), grade: Default::default(), lut: None, crop: Default::default(), blur: 0.0 };
         let ndc = [0.3, -0.8];
         let (q, z) = ([0.3 * 1.5 * 0.7, -0.8 * 0.7], 0.7);
         let n = (q[0] * q[0] + q[1] * q[1] + 1.0f64).sqrt();

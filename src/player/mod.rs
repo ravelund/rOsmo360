@@ -11,6 +11,7 @@ mod export_panel;
 mod handles;
 mod info;
 mod settings_panel;
+mod transitions;
 mod meter;
 mod playback;
 pub mod render;
@@ -27,6 +28,7 @@ use crate::ffmpeg::{self, Hwaccel};
 use crate::stab::{ImuAxes, Mode, Stabilizer};
 use crate::project::{Cut, Project};
 use crate::stitch::M3;
+use crate::transition::{Part, Transition};
 use crate::view::{Camera, Ease, Follow, Keyframes, Projection, View};
 use anyhow::{Context, Result};
 use gpu::{Rig, Shown};
@@ -443,8 +445,8 @@ enum Message {
     Split,
     /// Cut `i`'s crossfade from the cut before dragged to this many seconds.
     Crossfade(usize, f64),
-    /// Give the selected (or playing) cut a 1 s crossfade, or take its away.
-    ToggleCrossfade,
+    /// The Transitions panel and what it sets.
+    Transition(transitions::TransitionMsg),
     /// From the Effects panel.
     Effect(effects::EffectMsg),
     /// Delete the selected cut, or the selected music clip.
@@ -613,6 +615,9 @@ struct App {
     split_kept: f32,
     /// The Settings panel is open (at the left).
     settings_open: bool,
+    /// The Transitions panel, at the left like Settings (one of them at a
+    /// time).
+    transitions_open: bool,
     /// 10-bit tracks decode at 10 bits (`source::deep`).
     ten_bit: bool,
     fine_seam: bool,
@@ -723,6 +728,7 @@ impl App {
             modifiers: keyboard::Modifiers::default(),
             scrubbing: None,
             settings_open: false,
+            transitions_open: false,
             fullscreen: false,
             volume: saved.volume,
             muted: saved.muted,
@@ -1661,7 +1667,7 @@ impl App {
             Message::SettingsPanel => {
                 self.settings_open = !self.settings_open;
                 if self.settings_open {
-                    self.info = None;
+                    (self.info, self.transitions_open) = (None, false);
                 }
             }
             Message::AutoKey(on) => self.auto_key = on,
@@ -2186,13 +2192,7 @@ impl App {
                 self.begin_drag();
                 self.edit.set_crossfade(i, seconds);
             }
-            Message::ToggleCrossfade => {
-                let i = self.selected.unwrap_or(self.current);
-                let Some(c) = self.edit.cuts.get(i) else { return Task::none() };
-                let to = if c.crossfade > 0.0 { 0.0 } else { 1.0 };
-                self.edit.checkpoint();
-                self.edit.set_crossfade(i, to);
-            }
+            Message::Transition(msg) => self.transition_message(msg),
             Message::Split if self.selected_music.is_some() => {
                 // Tried on a copy first: a split refused (the playhead at
                 // the song's edge or outside it) used to leave an undo step
@@ -2647,23 +2647,38 @@ impl App {
     /// The 360 view as it should be drawn now, once a frame is decoded.
     fn sphere(&self) -> Option<Sphere> {
         let c = self.clip.as_ref()?;
+        let incoming = self.partner_layer();
+        // With the other cut of a transition drawn, this one is its layer
+        // of it, turned if it's a spin; alone it's as framed.
+        let (mut camera, mut part) = (self.camera(), Part::default());
+        if let (Some(_), Some(now)) = (&incoming, self.transition_now()) {
+            let mine = !now.partner_in as usize;
+            part = now.transition.parts(now.p)[mine];
+            if let Some(spin) = now.transition.spin(now.p, now.seconds) {
+                camera = camera.spun(spin[mine].0, spin[mine].1);
+            }
+        }
         Some(Sphere {
             rig: c.playback.media.rig.clone(),
             shown: c.shown.clone()?,
-            camera: self.camera(),
+            camera,
+            part,
             rig_from_view: c.playback.rig_from_view(self.rolling_shutter),
             fov_deg: self.shown_view().fov,
             picking: self.picking.is_some(),
-            incoming: self.partner_layer(),
+            incoming,
             overlays: self.overlay_draws(),
         })
     }
 
-    /// The other cut of a crossfade, as the view draws it over the current one.
-    fn partner_layer(&self) -> Option<(Arc<Rig>, Arc<Shown>, Camera, Vec<M3>, f32)> {
+    /// The other cut of a transition, as the view draws it with the current
+    /// one.
+    fn partner_layer(&self) -> Option<gpu::Incoming> {
         // Paused with the playing cut selected, it's shown on its own, to
-        // frame it.
-        if self.selected == Some(self.current) && self.clip.as_ref().is_some_and(|c| !c.playback.playing) {
+        // frame it; not with the Transitions panel open, where the cut is
+        // selected to set its transition and scrubbing through it is how
+        // that's judged.
+        if !self.transitions_open && self.selected == Some(self.current) && self.clip.as_ref().is_some_and(|c| !c.playback.playing) {
             return None;
         }
         let (i, inc) = self.partner.as_ref()?;
@@ -2678,7 +2693,24 @@ impl App {
         let look = if self.edit.cuts.get(*i).is_some_and(|c| c.flat) == self.look_flat { self.look } else { self.other_look };
         let camera = if self.follow { keyed().unwrap_or_else(|| look.camera()) } else { look.camera() };
         let camera = Camera { grade: self.grade(*i, t), lut: self.edit.cuts.get(*i).and_then(|c| c.lut_applied), ..camera };
-        Some((p.media.rig.clone(), shown, camera, p.rig_from_view(self.rolling_shutter), self.crossfade_shares()?.1 as f32))
+        let now = self.transition_now()?;
+        let theirs = now.partner_in as usize;
+        let camera = now.transition.spin(now.p, now.seconds).map_or(camera, |spin| camera.spun(spin[theirs].0, spin[theirs].1));
+        Some(gpu::Incoming { rig: p.media.rig.clone(), shown, camera, rig_from_view: p.rig_from_view(self.rolling_shutter), part: now.transition.parts(now.p)[theirs], under: !now.partner_in })
+    }
+
+    /// Where playback is in a transition between the current cut and its
+    /// partner.
+    fn transition_now(&self) -> Option<Now> {
+        let (cut, t) = self.clip_now()?;
+        let (j, _) = self.partner.as_ref()?;
+        if *j == self.current + 1 {
+            let next = self.edit.cuts.get(*j)?;
+            let from = self.edit.crossfade_from(self.current)?;
+            (t >= from && t < cut.end).then(|| Now { transition: next.transition, p: (t - from) / (cut.end - from), seconds: next.crossfade, partner_in: true })
+        } else {
+            (*j + 1 == self.current && t < cut.start + cut.crossfade).then(|| Now { transition: cut.transition, p: (t - cut.start) / cut.crossfade, seconds: cut.crossfade, partner_in: false })
+        }
     }
 
     /// Where playback is in the playing cut, by the clock `tick` changes
@@ -2725,7 +2757,7 @@ impl App {
         let picture = self.library.iter().find(|m| m.input == input).and_then(|m| m.flat).is_some_and(|f| f.picture);
         let end = if picture { ffmpeg::PICTURE_SECONDS } else { duration };
         let lut = self.auto_lut(&input);
-        self.edit.cuts.push(Cut { input, start: 0.0, end, keyframes: Default::default(), stabilize: Some(self.opts.stabilize), note: None, volume: Vec::new(), crossfade: 0.0, effects: Vec::new(), lut, old_lut_strength: None, flat: false, lut_applied: None });
+        self.edit.cuts.push(Cut { input, start: 0.0, end, keyframes: Default::default(), stabilize: Some(self.opts.stabilize), note: None, volume: Vec::new(), crossfade: 0.0, transition: Default::default(), effects: Vec::new(), lut, old_lut_strength: None, flat: false, lut_applied: None });
         self.mark_flat();
         let i = self.edit.cuts.len() - 1;
         self.selected = Some(i);
@@ -3234,6 +3266,7 @@ impl App {
                     return self.update(Message::Stab(next));
                 }
                 "g" | "G" => self.effect_message(effects::EffectMsg::Toggle),
+                "t" | "T" => self.transition_message(transitions::TransitionMsg::Toggle),
                 "r" | "R" => self.rolling_shutter = !self.rolling_shutter,
                 "m" | "M" => return self.update(Message::Mute),
                 "p" | "P" => {
@@ -3451,7 +3484,7 @@ impl App {
         // A text item's words and look, at the left while it's selected.
         // The Info and Settings panels win the left side over the Text panel
         // while open.
-        let view: Element<'_, Message> = match self.info_panel().or_else(|| self.settings_panel()).or_else(|| self.text_panel()) {
+        let view: Element<'_, Message> = match self.info_panel().or_else(|| self.settings_panel()).or_else(|| self.transitions_panel()).or_else(|| self.text_panel()) {
             Some(panel) => row![panel, view].into(),
             None => view,
         };
@@ -3513,8 +3546,6 @@ impl App {
         // With a song selected, C splits that instead.
         let music = self.selected_music.and_then(|i| self.edit.music.clips.get(i));
         let point = self.selected_volume.is_some() || self.selected_sound.is_some();
-        // Any cut but the first can crossfade in from the one before.
-        let crossfade_cut = Some(self.selected.unwrap_or(self.current)).filter(|&i| i > 0).and_then(|i| self.edit.cuts.get(i));
         let can_split = match music {
             Some(c) => self.position() > c.at + edit::MIN_CUT && self.position() < c.ends() - edit::MIN_CUT,
             None => self.edit.cuts.get(self.current).is_some_and(|c| p.target() > c.start + edit::MIN_CUT && p.target() < c.end - edit::MIN_CUT),
@@ -3568,11 +3599,8 @@ impl App {
                 tooltip::Position::Top,
             ),
             tip(
-                icon_button(CROSSFADE, crossfade_cut.map(|_| Message::ToggleCrossfade)),
-                text(match crossfade_cut {
-                    Some(c) if c.crossfade > 0.0 => "Take away this cut's crossfade (Shift-drag its start edge to change its length)",
-                    _ => "Crossfade into this cut from the one before, 1 s (Shift-drag its start edge to change its length)",
-                }),
+                icon_button(CROSSFADE, Some(Message::Transition(transitions::TransitionMsg::Toggle))),
+                text(if self.transitions_open { "Close the Transitions panel (T)" } else { "Transitions: how this cut comes in from the one before, dissolve, dip, wipe, push, slide or spin (T)" }),
                 tooltip::Position::Top,
             ),
             tip(icon_button(SPLIT, can_split.then_some(Message::Split)), text(if music.is_some() { "Split the selected music at the playhead (C)" } else { "Split the cut at the playhead (C)" }), tooltip::Position::Top),
@@ -3631,6 +3659,17 @@ fn credit<'a>() -> Element<'a, Message> {
 
 /// Edit icons: scissors (split), a bin (delete cut), arrows (undo, redo).
 /// Two film frames and a plus: give every cut this look.
+const TR_NONE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>"#;
+const TR_DIP_BLACK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"#;
+const TR_DIP_WHITE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>"#;
+const TR_WIPE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14M12 12h6M16 10l2 2-2 2"/></svg>"#;
+const TR_PUSH: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="11" rx="1"/><rect x="13" y="3" width="9" height="11" rx="1"/><path d="M6 19h12M15 16l3 3-3 3"/></svg>"#;
+const TR_SLIDE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="10" y="5" width="12" height="14" rx="2"/><path d="M2 12h10M9 9l3 3-3 3"/></svg>"#;
+const TR_SPIN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>"#;
+const ARROW_LEFT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>"#;
+const ARROW_RIGHT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>"#;
+const ARROW_UP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>"#;
+const ARROW_DOWN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>"#;
 const TO_ALL_CUTS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="11" height="8" rx="1"/><rect x="6" y="9" width="11" height="8" rx="1"/><path d="M9 9v2M13 9v2M20 15v6M17 18h6"/></svg>"#;
 /// Three sliders (the Effects panel).
 const EFFECTS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg>"#;
@@ -3854,6 +3893,15 @@ fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> impl F
     async move { rx.await.expect("loader thread panicked") }
 }
 
+/// Where playback is in a transition: which, how far through (0..1), how
+/// long it is, and whether the partner is the cut coming in.
+struct Now {
+    transition: Transition,
+    p: f64,
+    seconds: f64,
+    partner_in: bool,
+}
+
 /// The 360 view widget: draws the shader primitive and turns drags and the
 /// scroll wheel into look and zoom messages.
 #[derive(Clone)]
@@ -3865,9 +3913,9 @@ struct Sphere {
     fov_deg: f64,
     /// Drags draw a box to pick a colour instead of looking around.
     picking: bool,
-    /// Through a crossfade, the next cut drawn over: its rig, frame,
-    /// framing, readout views and how far in it is (0..1).
-    incoming: Option<(Arc<Rig>, Arc<Shown>, Camera, Vec<M3>, f32)>,
+    /// Its layer in a transition, and the other cut of it.
+    part: Part,
+    incoming: Option<gpu::Incoming>,
     overlays: Vec<gpu::OverlayDraw>,
 }
 
@@ -3966,7 +4014,8 @@ impl shader::Program<Message> for Sphere {
             shown: self.shown.clone(),
             camera: self.camera,
             rig_from_view: self.rig_from_view.clone(),
-            incoming: self.incoming.clone().map(|(rig, shown, camera, rig_from_view, mix)| gpu::Incoming { rig, shown, camera, rig_from_view, mix }),
+            part: self.part,
+            incoming: self.incoming.clone(),
             overlays: self.overlays.clone(),
         }
     }

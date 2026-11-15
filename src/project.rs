@@ -13,6 +13,7 @@
 //! faded out there if it runs on.
 
 use crate::stab::Mode;
+use crate::transition::Transition;
 use crate::view::{Aim, Aspect, Camera, Keyframes, Projection, View};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -300,6 +301,9 @@ pub struct Cut {
     /// (picture and sound); the edit is that much shorter.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub crossfade: f64,
+    /// How it comes in through that overlap: a dissolve unless it says.
+    #[serde(default, skip_serializing_if = "Transition::is_dissolve")]
+    pub transition: Transition,
     /// Its colour effects' keyframes, clip time, apart from the camera's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<crate::grade::EffectKey>,
@@ -520,6 +524,18 @@ pub fn keyframed(cuts: &[Cut], n: usize, t: f64) -> Option<(&Keyframes, f64)> {
 pub fn camera_at(cuts: &[Cut], n: usize, t: f64, aim: Aim) -> Camera {
     let camera = keyframed(cuts, n, t).and_then(|(k, at)| k.camera_at(at, &held(aim, at == t, t))).unwrap_or_else(|| View::home(Projection::Perspective).camera());
     Camera { grade: crate::grade::grade_at(&cuts[n].effects, t), lut: cuts[n].lut_applied, ..camera }
+}
+
+/// `camera`, cut `n`'s at clip time `t`, turned and smeared as a spin
+/// into it or out of it has it there; as it is anywhere else.
+pub fn spun(cuts: &[Cut], n: usize, t: f64, camera: Camera) -> Camera {
+    let cut = &cuts[n];
+    let turn = if cut.crossfade > 0.0 && t < cut.start + cut.crossfade {
+        cut.transition.spin((t - cut.start) / cut.crossfade, cut.crossfade).map(|s| s[1])
+    } else {
+        cuts.get(n + 1).filter(|next| next.crossfade > 0.0 && t > cut.end - next.crossfade).and_then(|next| next.transition.spin((t - (cut.end - next.crossfade)) / next.crossfade, next.crossfade).map(|s| s[0]))
+    };
+    turn.map_or(camera, |(angle, blur)| camera.spun(angle, blur))
 }
 
 /// `aim` for reading keyframes from `keyframed`: as asked in the cut's own

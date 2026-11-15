@@ -56,6 +56,12 @@ struct Uniforms {
     // The LUT (lut.rs): .x 1 if on, .y strength, .z size; its domain's low
     // and high ends.
     lut: array<vec4f, 3>,
+    // This layer in a transition between two cuts (transition.rs `Part`):
+    // its offset in view widths and heights, how much of it shows, how far
+    // it's dipped; a wipe (nx, ny, c0, edge); the dip's colour and 1 if
+    // there's a wipe; then 1 if it's drawn over the other layer, and a
+    // spin's blur in radians of yaw.
+    trans: array<vec4f, 4>,
 }
 
 const BINS: u32 = 32u;
@@ -67,6 +73,9 @@ const CELL_ALPHA_HI: f32 = 96.0;
 const TAPER_LO: f32 = 83.0;
 const TAPER_HI: f32 = 97.0;
 const TAPER_WIDTH: f32 = 12.0;
+// Must match transition.rs.
+const SOFT: f32 = 0.04;
+const TAPS: u32 = 16u;
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var samp: sampler;
@@ -364,20 +373,23 @@ fn flat_uv(pos: vec2f) -> vec2f {
     return vec2f(0.5 + (u.crop.x + p.x) / u.flat.y, 0.5 + u.crop.y + p.y);
 }
 
-@fragment
-fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+// The picture at view pixel `p`, before its look, the camera turned `a`
+// radians of yaw from where it looks (`Camera::spun`): black where there's
+// none.
+fn picture(p: vec2f, a: f32) -> vec3f {
     if u.flat.x > 0.5 {
-        let uv = flat_uv(pos.xy - u.misc.zw);
+        let uv = flat_uv(p) + vec2f(degrees(a) / 90.0 / u.flat.y, 0.0);
         if any(uv < vec2f(0.0)) || any(uv > vec2f(1.0)) {
-            return vec4f(0.0, 0.0, 0.0, 1.0);
+            return vec3f(0.0);
         }
         let slot = 2.0 * u.flat.z;
         if u.flat.w > 0.5 {
-            return finish(hdr_to_sdr(ycc(slot, uv), u.flat.w), pos);
+            return hdr_to_sdr(ycc(slot, uv), u.flat.w);
         }
-        return finish(nv12(slot, uv), pos);
+        return nv12(slot, uv);
     }
-    let v = rows(u.user0, u.user1, u.user2, screen_ray(pos.xy - u.misc.zw));
+    let r = rows(u.user0, u.user1, u.user2, screen_ray(p));
+    let v = vec3f(cos(a) * r.x + sin(a) * r.z, r.y, cos(a) * r.z - sin(a) * r.x);
     let steps = u32(u.misc.x);
     let mid = view_at(steps / 2u, v);
     var col = array<vec3f, 2>(vec3f(0.0), vec3f(0.0));
@@ -404,13 +416,47 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     }
     let wsum = wt[0] + wt[1];
     if wsum <= 0.0 {
-        return vec4f(0.0, 0.0, 0.0, 1.0);
+        return vec3f(0.0);
     }
     var share = wt[0] / wsum;
     if wt[0] > 0.0 && wt[1] > 0.0 {
         share = cut_share(share, col[0], col[1], cut_strength(mid));
     }
-    return finish(col[0] * share + col[1] * (1.0 - share), pos);
+    return col[0] * share + col[1] * (1.0 - share);
+}
+
+@fragment
+fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    // Where this pixel is in the layer's own picture: a push or a slide
+    // moves the layer, by whole pixels as `Transition::mix` does. Off its
+    // edge the layer under shows, or black under both.
+    let moved = round(u.trans[0].xy * u.screen.xy);
+    let p = pos.xy - u.misc.zw - moved;
+    if any(moved != vec2f(0.0)) && (any(p < vec2f(0.0)) || any(p >= u.screen.xy)) {
+        return vec4f(0.0, 0.0, 0.0, 1.0 - u.trans[3].x);
+    }
+    var rgb: vec3f;
+    let blur = u.trans[3].y;
+    if blur > 0.0 {
+        // A spin's motion blur: views spread over what the shutter saw,
+        // each pixel's set shifted by its own noise so the steps between
+        // them come out as grain, not as bands.
+        let j = noise(vec3u(vec2u(pos.xy), 7u)).x;
+        var sum = vec3f(0.0);
+        for (var i = 0u; i < TAPS; i++) {
+            sum += picture(p, blur * ((f32(i) + j) / f32(TAPS) - 0.5));
+        }
+        rgb = sum / f32(TAPS);
+    } else {
+        rgb = picture(p, 0.0);
+    }
+    var alpha = u.trans[0].z;
+    if u.trans[2].w > 0.5 {
+        let w = u.trans[1];
+        let uv = p / u.screen.xy;
+        alpha *= 1.0 - smoothstep(w.w - SOFT, w.w + SOFT, w.x * uv.x + w.y * uv.y + w.z);
+    }
+    return finish(rgb, pos, p, alpha);
 }
 
 // The colour effects, then light as the surface wants it.
@@ -440,12 +486,14 @@ fn apply_lut(c: vec3f) -> vec3f {
     return c + (to - c) * u.lut[0].y;
 }
 
-fn finish(picture: vec3f, pos: vec4f) -> vec4f {
+// `p` is the pixel in the layer's picture, `pos` on the target.
+fn finish(picture: vec3f, pos: vec4f, p: vec2f, alpha: f32) -> vec4f {
     var rgb = apply_lut(picture);
     if u.grade[2].z > 0.5 {
-        let p = pos.xy - u.misc.zw;
         rgb = grade(rgb, vec2f(p.x / u.screen.x * 2.0 - 1.0, p.y / u.screen.y * 2.0 - 1.0), u.screen.x / u.screen.y);
     }
+    // A dip to black or white, on the finished look.
+    rgb = mix(rgb, u.trans[2].rgb, u.trans[0].w);
     if u.dither.x > 0.5 {
         // Triangular noise of ±1 level, the same on each channel (grain in
         // brightness, not colour speckle), new each frame: the 8-bit target
@@ -457,5 +505,5 @@ fn finish(picture: vec3f, pos: vec4f) -> vec4f {
         // The surface will sRGB-encode; hand it linear light.
         rgb = select(pow((rgb + 0.055) / 1.055, vec3f(2.4)), rgb / 12.92, rgb <= vec3f(0.04045));
     }
-    return vec4f(rgb, 1.0);
+    return vec4f(rgb, alpha);
 }
