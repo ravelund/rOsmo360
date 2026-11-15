@@ -544,6 +544,12 @@ struct StitchOpts {
     /// shift. Experimental.
     #[arg(long)]
     flow: bool,
+    /// Decode an export's lens tracks on the GPU it stitches on, without
+    /// copying each frame through memory (Linux, Vulkan video decoding;
+    /// the usual way where it can't start). Experimental.
+    #[cfg(feature = "zero-copy")]
+    #[arg(long)]
+    zero_copy: bool,
     /// Give each lens the other's video track. Which track a lens was
     /// recorded to isn't in the clip (telemetry-parser goes by the camera
     /// model), and swapped back-to-back lenses still stitch cleanly, only
@@ -567,6 +573,8 @@ impl Default for StitchOpts {
             no_align: false,
             no_cut: false,
             flow: false,
+            #[cfg(feature = "zero-copy")]
+            zero_copy: false,
             swap_lenses: false,
         }
     }
@@ -659,6 +667,10 @@ impl Pipeline {
         let aligner = if opts.no_align || opts.only.is_some() { None } else { align::Aligner::new(&lenses) };
         if opts.flow {
             align::set_flow(true);
+        }
+        #[cfg(feature = "zero-copy")]
+        if opts.zero_copy {
+            zerocopy::set_on(true);
         }
         let hw = ffmpeg::Hwaccel::pick(input, tracks[0])?;
         Ok(Pipeline {

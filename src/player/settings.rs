@@ -33,6 +33,9 @@ pub struct Settings {
     pub ten_bit: bool,
     /// Test feature: the fine seam alignment (`align::set_flow`).
     pub fine_seam: bool,
+    /// Test feature: zero-copy decoding for exports (`zerocopy::set_on`),
+    /// in builds that have it.
+    pub zero_copy: bool,
     /// The library LUT D-Log M clips get when they're added.
     pub dlog_m_lut: Option<String>,
     /// How tall the timeline's lanes are, as the divider above the
@@ -60,6 +63,7 @@ impl Default for Settings {
             theme: iced::Theme::KanagawaDragon.to_string(),
             ten_bit: false,
             fine_seam: false,
+            zero_copy: false,
             dlog_m_lut: None,
             timeline_scale: 1.0,
             view_angles: true,

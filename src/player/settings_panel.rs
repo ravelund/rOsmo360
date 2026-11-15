@@ -93,6 +93,14 @@ impl App {
         ]
         .spacing(12)
         .padding(12);
+        #[cfg(feature = "zero-copy")]
+        let body = body.push(
+            column![
+                toggler(self.zero_copy).label("Zero-copy decoding").on_toggle(Message::ZeroCopy),
+                note("Exports decode the lenses on the graphics card they stitch on, without copying each frame through memory: half again to twice as fast, and at all 10 bits. Needs Vulkan video decoding; where it can't start, the export decodes as usual. From the next export."),
+            ]
+            .spacing(6),
+        );
         Some(container(scrollable(body)).width(WIDTH).height(Length::Fill).into())
     }
 }

@@ -10,6 +10,20 @@ mod ffi {
 
 use anyhow::{Context, Result, bail};
 use ffi::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Asked for: by `--zero-copy`, the player's test-feature setting, or
+/// `ROSMO360_ZEROCOPY` in the environment. One switch a process, as the
+/// fine seam alignment's.
+static ON: AtomicBool = AtomicBool::new(false);
+
+pub fn set_on(on: bool) {
+    ON.store(on, Ordering::Relaxed);
+}
+
+pub fn on() -> bool {
+    ON.load(Ordering::Relaxed) || std::env::var_os("ROSMO360_ZEROCOPY").is_some()
+}
 use std::ffi::{CStr, CString, c_int};
 use std::path::Path;
 use std::ptr::{null, null_mut};
@@ -347,7 +361,7 @@ impl Shared {
                         .subresource_range(colour(vk::ImageAspectFlags::COLOR))
                 };
                 let before = [
-                    whole(src, vk::ImageLayout::from_raw((*vkf).layout[0] as i32), vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags2::from_raw((*vkf).access[0] as u64), vk::AccessFlags2::TRANSFER_READ),
+                    whole(src, vk::ImageLayout::from_raw((*vkf).layout[0] as i32), vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags2::from_raw((*vkf).access[0]), vk::AccessFlags2::TRANSFER_READ),
                     whole(dst[0], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags2::SHADER_READ, vk::AccessFlags2::TRANSFER_WRITE),
                     whole(dst[1], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags2::SHADER_READ, vk::AccessFlags2::TRANSFER_WRITE),
                 ];

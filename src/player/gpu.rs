@@ -111,7 +111,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// A clip's lens geometry; the pipeline rebuilds its masks only when another
 /// clip is opened.
 pub struct Rig {
-    id: u64,
+    pub(super) id: u64,
     pub lenses: Vec<Lens>,
     pub tracks: Vec<u32>,
     pub seam: Option<Seam>,
@@ -158,6 +158,13 @@ pub struct SeamSample {
 }
 
 impl SeamSample {
+    /// From strips sampled on the GPU (zero-copy decoding), without the
+    /// exposure measure.
+    #[cfg(feature = "zero-copy")]
+    pub fn from_strips(strips: Option<Strips>) -> Self {
+        SeamSample { gains: None, strips }
+    }
+
     pub fn new(rig: &Rig, frame: &Frame) -> Self {
         let rgb = |i: usize, u: f64, v: f64| frame.rgb_at(&rig.lenses[i], rig.tracks[rig.lenses[i].input], u, v);
         SeamSample {
@@ -207,11 +214,6 @@ impl Shown {
 
     pub fn frame(&self) -> &Frame {
         &self.frame
-    }
-
-    /// EXPERIMENT: another seam fix for the same picture.
-    pub fn set_fix(&mut self, fix: SeamFix) {
-        self.fix = fix;
     }
 }
 
