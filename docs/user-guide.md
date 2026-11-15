@@ -102,7 +102,7 @@ From top to bottom:
 
    ![The timeline: a teal title block on the Text lane and an orange logo block on the Overlay lane, each with Effects and Motion rows; four cuts with thumbnails and labels such as "0045 · 12.0 s" and "0026 · 10.0 s · world lock", crossed boxes where cuts crossfade and a light-blue sound line; the Effects and View rows with keyframe marks; the seek bar; and a green soundtrack lane with its waveform and an orange volume line](guide/timeline.png)
 
-   On the cuts, an **X** marks a crossfade and a light-blue line a cut's own sound level. Each track's keyframes sit in faint rows under it, named at the left: **View** for the camera's keyframes (see [Keyframes](#7-keyframes-moving-the-camera)), **Effects** for colour ([Effects](#10-effects-colour-opacity-and-fades)), and **Motion** for where an overlay is ([Titles and overlays](#11-titles-and-overlays)). Click a mark to jump to it, and drag it to move it to another moment. In the music lane, the orange line is the music's volume.
+   On the cuts, a mark over an overlap is a transition (an **X** for a crossfade; see [Transitions](#8-transitions-and-crossfades)) and a light-blue line a cut's own sound level. Each track's keyframes sit in faint rows under it, named at the left: **View** for the camera's keyframes (see [Keyframes](#7-keyframes-moving-the-camera)), **Effects** for colour ([Effects](#10-effects-colour-opacity-and-fades)), and **Motion** for where an overlay is ([Titles and overlays](#11-titles-and-overlays)). Click a mark to jump to it, and drag it to move it to another moment. In the music lane, the orange line is the music's volume.
 
 **Panels** open beside the view as you need them, and close again with the same button or their ✕:
 
@@ -310,7 +310,7 @@ Select the later of the two cuts and click **transitions** (two overlapping fram
 Picking a style gives the cut a 1 second transition. Wipe, push, slide and spin get a **Direction** (a spin turns left or right). **Length** sets how long it lasts, and **to all cuts** (stacked frames with a plus) gives every cut in the edit the same transition. Whatever the style, the sound crossfades.
 
 - **Make it longer or shorter on the timeline**: hold **Shift** and drag the later cut's left edge. Further left is a longer transition, back right a shorter one. (Without Shift, the same drag trims the cut.) On a plain cut this makes a dissolve.
-- On the timeline the overlap is marked with an **X**.
+- On the timeline the overlap is darkened and carries its style's mark: an **X** for a dissolve, a V for a dip (down to black, up to white), one diagonal for a wipe, an arrowhead for a slide and two for a push, a ring for a spin.
 
 ![The timeline zoomed in: the second cut overlapping the end of the first, with an X over the overlap, and the soundtrack lane below](guide/timeline-zoomed.png)
 

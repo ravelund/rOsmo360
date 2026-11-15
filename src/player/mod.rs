@@ -3530,7 +3530,7 @@ impl App {
                     let to = (all.partition_point(|(t, _)| *t <= c.end) + 1).min(all.len());
                     all[from..to].to_vec()
                 });
-                timeline::Block { labels: cut_labels(c, self.opts.stabilize), from, len: c.end - c.start, start: c.start, keys, sound: c.volume.clone(), thumbs, crossfade: c.crossfade, effects: c.effects.iter().map(|k| k.t).collect() }
+                timeline::Block { labels: cut_labels(c, self.opts.stabilize), from, len: c.end - c.start, start: c.start, keys, sound: c.volume.clone(), thumbs, crossfade: c.crossfade, transition: c.transition, effects: c.effects.iter().map(|k| k.t).collect() }
             })
             .collect();
         let (timeline_start, timeline_span) = self.timeline_window();

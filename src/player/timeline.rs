@@ -142,8 +142,10 @@ pub struct Block {
     pub thumbs: Vec<(f64, Handle)>,
     /// Its sound's volume points, clip time (some may lie outside the cut).
     pub sound: Vec<crate::project::VolumeKey>,
-    /// How long it overlaps the cut before, dissolving in.
+    /// How long it overlaps the cut before, and how it comes in through
+    /// that (drawn as the transition's mark over the overlap).
     pub crossfade: f64,
+    pub transition: crate::transition::Transition,
     /// Its effect keyframes' clip times.
     pub effects: Vec<f64>,
 }
@@ -781,6 +783,69 @@ impl canvas::Program<Message> for OverlayLane {
     }
 }
 
+/// A transition's mark across its overlap, `l` to `r` and `h` tall, so the
+/// styles can be told apart on the timeline: a dissolve the X editors draw
+/// (as on the music lane); a dip a V down to black or up to white, with
+/// that edge underlined; a wipe one diagonal, leaning the way it goes; a
+/// slide an arrowhead the way it goes and a push two; a spin a ring.
+fn transition_mark(t: crate::transition::Transition, l: f32, r: f32, h: f32) -> Path {
+    use crate::transition::{Direction, Style};
+    let (mid, half) = ((l + r) / 2.0, h / 2.0);
+    Path::new(|p| {
+        let mut line = |points: &[(f32, f32)]| {
+            p.move_to(Point::new(points[0].0, points[0].1));
+            for &(x, y) in &points[1..] {
+                p.line_to(Point::new(x, y));
+            }
+        };
+        // An arrowhead across the span from `a` to `b`, pointing the way
+        // the transition goes.
+        let head = |a: f32, b: f32| match t.direction {
+            Direction::Right => [(a, 0.0), (b, half), (a, h)],
+            Direction::Left => [(b, 0.0), (a, half), (b, h)],
+            Direction::Down => [(a, 0.0), ((a + b) / 2.0, h), (b, 0.0)],
+            Direction::Up => [(a, h), ((a + b) / 2.0, 0.0), (b, h)],
+        };
+        match t.style {
+            Style::Dissolve => {
+                line(&[(l, h), (r, 0.0)]);
+                line(&[(l, 0.0), (r, h)]);
+            }
+            Style::DipBlack => {
+                line(&[(l, 0.0), (mid, h), (r, 0.0)]);
+                line(&[(l, h - 1.0), (r, h - 1.0)]);
+            }
+            Style::DipWhite => {
+                line(&[(l, h), (mid, 0.0), (r, h)]);
+                line(&[(l, 1.0), (r, 1.0)]);
+            }
+            Style::Wipe => match t.direction {
+                Direction::Right | Direction::Up => line(&[(l, h), (r, 0.0)]),
+                Direction::Left | Direction::Down => line(&[(l, 0.0), (r, h)]),
+            },
+            Style::Slide => line(&head(l, r)),
+            Style::Push => {
+                // Two heads, one behind the other.
+                let horizontal = matches!(t.direction, Direction::Left | Direction::Right);
+                if horizontal {
+                    line(&head(l, mid));
+                    line(&head(mid, r));
+                } else {
+                    let whole = head(l, r);
+                    let (top, bottom) = if t.direction == Direction::Down { (0.0, half) } else { (half, h) };
+                    let squeeze = |(x, y): (f32, f32), from: f32| (x, from + y / 2.0);
+                    line(&whole.map(|pt| squeeze(pt, top.min(bottom))));
+                    line(&whole.map(|pt| squeeze(pt, top.max(bottom))));
+                }
+            }
+            Style::Spin => {
+                let radius = ((r - l) / 2.0).min(half - 3.0).max(2.0);
+                p.circle(Point::new(mid, half), radius);
+            }
+        }
+    })
+}
+
 /// The seek bar, over every lane (user, 2026-11-15: it sat between the
 /// keyframe rows and the music): the edit's length with the part played
 /// filled, a tick where each cut begins and the playhead's knob. A press
@@ -1183,17 +1248,11 @@ impl canvas::Program<Message> for Marks {
                 frame.stroke(&mark, Stroke::default().with_width(1.0).with_color(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.7)));
             }
         }
-        // Crossfades: an X over each overlap, as on the music lane.
+        // Transitions: each overlap darkened, with its style's mark.
         for c in self.blocks.iter().filter(|c| c.crossfade > 0.0) {
             let (l, r) = (self.x(c.from, bounds), self.x(c.from + c.crossfade, bounds));
             frame.fill(&Path::rectangle(Point::new(l, 0.0), Size::new(r - l, self.rows.cuts)), iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35));
-            let x = Path::new(|p| {
-                p.move_to(Point::new(l, self.rows.cuts));
-                p.line_to(Point::new(r, 0.0));
-                p.move_to(Point::new(l, 0.0));
-                p.line_to(Point::new(r, self.rows.cuts));
-            });
-            frame.stroke(&x, Stroke::default().with_width(1.5).with_color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.85)));
+            frame.stroke(&transition_mark(c.transition, l, r, self.rows.cuts), Stroke::default().with_width(1.5).with_color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.85)));
         }
         if let Drag::Move { moved: true, to, .. } = drag {
             let t = self.blocks.get(*to).map_or(self.duration, |c| c.from);

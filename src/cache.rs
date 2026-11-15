@@ -97,7 +97,12 @@ pub fn telemetry(input: &Path, progress: &dyn Fn(f64)) -> Result<Telemetry> {
     if let Some(e) = entry {
         store(&e, |w| write_telemetry(w, &t));
     }
-    Ok(t)
+    // As an entry gives it back (the attitude as f32, the rig through its
+    // JSON), so a clip's first run and its cached ones work from the same
+    // numbers: a first export differed from every later one (0037, 43 dB).
+    let mut bytes = Vec::new();
+    write_telemetry(&mut bytes, &t)?;
+    Ok(read_telemetry(&mut bytes.as_slice()).unwrap_or(t))
 }
 
 /// A thumbnail: clip time, and RGBA pixels of `width` × `height`.
