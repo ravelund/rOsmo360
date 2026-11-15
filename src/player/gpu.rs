@@ -208,6 +208,11 @@ impl Shown {
     pub fn frame(&self) -> &Frame {
         &self.frame
     }
+
+    /// EXPERIMENT: another seam fix for the same picture.
+    pub fn set_fix(&mut self, fix: SeamFix) {
+        self.fix = fix;
+    }
 }
 
 /// Everything one draw needs; rebuilt by the view on every redraw.

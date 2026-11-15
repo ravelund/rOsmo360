@@ -234,6 +234,39 @@ pub fn encode(
     let stream = source::spawn(kind, clip.hw, start, p.fps)?;
     let failed = stream.error.clone();
     let rig = &clip.rig;
+    // EXPERIMENT (zero-copy ceiling, not for commit): one decoded frame
+    // drawn for every frame, so nothing is decoded or uploaded after it.
+    // =1 reuses its seam measure too, =2 measures the seam every frame.
+    if let Ok(mode) = std::env::var("ROSMO360_NODECODE") {
+        let frame = stream.frames.recv().ok().context("no frames decoded")?;
+        drop(stream);
+        let mut fix = SeamFix::default();
+        fix.apply(rig, SeamSample::new(rig, &frame), false);
+        let mut shown = Shown::new(frame, fix.clone());
+        let mut done = 0;
+        for n in 0..total {
+            let t = start + n as f64 / p.fps;
+            if mode == "2" {
+                fix.apply(rig, SeamSample::new(rig, shown.frame()), true);
+                shown.set_fix(fix.clone());
+            }
+            let views = if p.stab.has_data() { p.stab.rig_from_view(t * 1000.0, p.readout_ms, p.rs_steps) } else { vec![stitch::IDENTITY] };
+            if gpu.pending.len() == IN_FLIGHT
+                && let Some(frame) = gpu.finish()?
+            {
+                encoder.write(&frame)?;
+                done += 1;
+                tick(done)?;
+            }
+            gpu.submit(rig, &shown, &camera(t), &views, size);
+        }
+        while let Some(frame) = gpu.finish()? {
+            encoder.write(&frame)?;
+            done += 1;
+            tick(done)?;
+        }
+        return Ok(());
+    }
     // Seam and attitude for the next frames while this one renders. The
     // threads end with the stream, or when this returns and drops `measured`.
     let (sampled_tx, sampled) = sync_channel::<(Frame, SeamSample)>(2);
