@@ -73,7 +73,7 @@ fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// See `Cmd::Check`; pans over `fast` degrees a second count.
 pub fn check(path: &Path, opts: &StitchOpts, fast_pan: f64) -> Result<()> {
     let mut project = Project::load(path)?;
-    let (pipelines, of_cut) = cut_pipelines(&mut project, opts, true)?;
+    let (pipelines, of_cut) = cut_pipelines(&mut project, opts, true, None)?;
     let cuts = &project.cuts;
     let offsets = project::offsets(cuts);
     let mut found = Vec::new();

@@ -109,7 +109,7 @@ From top to bottom:
 | Panel | Side | Opens with |
 |---|---|---|
 | [Effects](#10-effects-colour-opacity-and-fades): colour, opacity, fades, rolling shutter | right | **Effects** in the transport row, or **G** |
-| [Export](#14-exporting-video): resolution, format, a file per cut | right | **export** in the top bar, or **Ctrl+E** |
+| [Export](#14-exporting-video): resolution, frame rate, format, a file per cut | right | **export** in the top bar, or **Ctrl+E** |
 | [Audio](#levels): listening volume and the mix | right | the **speaker** in the transport row |
 | [Settings](#16-settings): theme, decoding, keyframing | left | the **cog** in the top bar, or **Ctrl+,** |
 | [Info](#file-information): what a file is and where it is | left | **right-click** a cut, a song or a picture on the timeline |
@@ -511,10 +511,11 @@ Click **export** (an arrow out of a tray) in the top bar, or press **Ctrl+E**, f
 ![The Export panel: Resolution 1080p; Format MP4 or DaVinci Resolve, each with a note; Clips, "A file per cut"; what the export will make, "1920 × 1080, 0:43.50", in the aspect's shape; and the Export… button](guide/export-panel.png)
 
 1. **Resolution**: 720p, 1080p (the default, good for sharing online), 1440p or 2160p (4K). It's the short side of the picture, so 1080p is 1920 × 1080 for 16:9, or 1080 × 1920 for 9:16. The shape comes from the **Aspect** picker in the top bar, 16:9 when it's Free; the panel says what you'll get.
-2. **Format**:
+2. **Frame rate**: **As filmed** keeps the clips' own rate (an edit of clips at different rates takes its first Osmo clip's). Or pick 24, 25, 30, 50, 60 or 100 frames a second: frames are dropped or repeated to it, and nothing changes speed. Clips filmed at 100 fps export about three times as fast at 30, as there's a third of the frames to stitch. A rate close to the clips' own but not equal (30 for clips filmed at 29.97) repeats a frame every half minute or so; As filmed avoids that.
+3. **Format**:
    - **MP4**: H.264 video and AAC sound. Plays anywhere, small.
    - **DaVinci Resolve**: 10-bit DNxHR HQX video with uncompressed PCM sound in a `.mov`. DaVinci Resolve's free version on Linux can't read H.264, H.265 or AAC, and 10 bits leave room to grade. The files are large, about 28 MB a second at 1080p, as editing formats are.
-3. **Clips**: tick **A file per cut** to write each cut to its own file instead of one video, for finishing in another editor (see below).
+4. **Clips**: tick **A file per cut** to write each cut to its own file instead of one video, for finishing in another editor (see below).
 4. Click **Export…** and choose where to save.
 
 The export renders the whole edit at full resolution, with the sound joined across the cuts and the music mixed in. Each cut uses its own keyframes, stabilisation and effects; transitions, volume points, levels and the fades are applied; titles and overlays are drawn in; and the export follows the rolling-shutter setting. Progress shows in the top bar, with a crossed circle to stop it; a cancelled export leaves no half-finished file. Your choices are remembered.
@@ -632,6 +633,7 @@ rosmo360 export edit.json --draft -o draft.mp4                # quick and soft, 
 rosmo360 export edit.json --clips --handles 1 -o clips/        # a file per cut, with 1 s extra either side
 rosmo360 export edit.json --clips --graded -o clips/           # the same, with the cuts' LUTs and colour effects
 rosmo360 export edit.json --format resolve -o edit.mov         # 10-bit DNxHR HQX, for DaVinci Resolve on Linux
+rosmo360 export edit.json --fps 30 -o edit.mp4                 # at 30 frames a second, whatever the clips were filmed at
 ```
 
 Exports decode at 8 bits unless you set `ROSMO360_10BIT=1` (the command line's version of the 10-bit setting): `ROSMO360_10BIT=1 rosmo360 export edit.json --format resolve -o edit.mov`.

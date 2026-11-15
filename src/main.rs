@@ -219,6 +219,11 @@ enum Cmd {
         /// the other editor).
         #[arg(long, requires = "clips")]
         graded: bool,
+        /// Frames a second, instead of the clips' own rate: frames are
+        /// dropped or repeated to it, the speed stays (100 fps clips at 30
+        /// are a third of the frames to stitch).
+        #[arg(long, value_parser = parse_fps)]
+        fps: Option<f64>,
         /// Stitch from the low-resolution proxy (LRF): a quick, soft draft.
         #[arg(long)]
         draft: bool,
@@ -409,6 +414,14 @@ fn cache_clips(paths: &[PathBuf], force: bool) -> Result<()> {
 fn parse_pair(s: &str) -> Result<(f64, f64), String> {
     let (a, b) = s.split_once(',').ok_or("give YAW,PITCH")?;
     Ok((a.trim().parse().map_err(|e| format!("{a:?}: {e}"))?, b.trim().parse().map_err(|e| format!("{b:?}: {e}"))?))
+}
+
+/// An export's frame rate from the command line: 1 to 240.
+fn parse_fps(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(fps) if (1.0..=240.0).contains(&fps) => Ok(fps),
+        _ => Err("frames a second, from 1 to 240".to_owned()),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
@@ -878,7 +891,7 @@ fn span(input: &Path, start: Option<f64>, duration: Option<f64>, reframe: Option
 /// cancel) stops the export and removes the unfinished file.
 /// Sets up each cut's clip once per clip and stabilisation (the cut's own
 /// wins over the command's): the pipelines, and per cut the index of its own.
-fn cut_pipelines(project: &mut project::Project, opts: &StitchOpts, proxy: bool) -> Result<(Vec<Pipeline>, Vec<usize>)> {
+fn cut_pipelines(project: &mut project::Project, opts: &StitchOpts, proxy: bool, rate: Option<f64>) -> Result<(Vec<Pipeline>, Vec<usize>)> {
     let mut pipelines: Vec<Pipeline> = Vec::new();
     let mut of_cut = Vec::with_capacity(project.cuts.len());
     for cut in &mut project.cuts {
@@ -905,8 +918,9 @@ fn cut_pipelines(project: &mut project::Project, opts: &StitchOpts, proxy: bool)
     // 100 fps mode beside 30 fps ones), are decoded at it, frames repeated
     // or dropped, so they keep their speed and stay in step, and pictures
     // are repeated at it. A 100 fps cut in a 30 fps edit came out 200
-    // frames for 2 s, played 3.3 times slow.
-    let fps = pipelines.iter().find(|p| p.flat.is_none()).or(pipelines.iter().find(|p| p.flat.is_some_and(|f| !f.picture))).map_or(30.0, |p| p.fps);
+    // frames for 2 s, played 3.3 times slow. Or at the `rate` asked for:
+    // 100 fps clips as a 30 fps video are a third of the frames to stitch.
+    let fps = rate.unwrap_or_else(|| pipelines.iter().find(|p| p.flat.is_none()).or(pipelines.iter().find(|p| p.flat.is_some_and(|f| !f.picture))).map_or(30.0, |p| p.fps));
     for p in pipelines.iter_mut().filter(|p| p.flat.is_some_and(|f| f.picture) || (p.fps - fps).abs() > 0.01) {
         p.rate = Some(fps);
         p.fps = fps;
@@ -923,6 +937,8 @@ pub struct ExportOpts {
     pub cpu: bool,
     pub format: ffmpeg::Format,
     pub target: Target,
+    /// Frames a second, instead of the clips' own rate (`cut_pipelines`).
+    pub fps: Option<f64>,
 }
 
 pub enum Target {
@@ -944,7 +960,7 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
         bail!("nothing to export yet: the project has music but no video cuts");
     }
     let mut project = project.clone();
-    let (pipelines, of_cut) = cut_pipelines(&mut project, opts, out.draft)?;
+    let (pipelines, of_cut) = cut_pipelines(&mut project, opts, out.draft, out.fps)?;
     let project = &project;
     // The shader always draws both lenses, so `--only` needs the CPU.
     let mut gpu = if out.cpu || opts.only.is_some() {
@@ -968,7 +984,7 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
         Target::Clips { handles, .. } => handles.max(0.0),
     };
     let fps = pipelines[0].fps;
-    if pipelines.iter().any(|p| (p.fps - fps).abs() > 0.01) {
+    if out.fps.is_none() && pipelines.iter().any(|p| (p.fps - fps).abs() > 0.01) {
         eprintln!("the clips' frame rates differ; exporting at {fps:.3} fps");
     }
     let whole = matches!(out.target, Target::One(_));
@@ -1263,7 +1279,7 @@ fn run() -> Result<()> {
             encoder.finish()?;
             eprintln!("wrote {}", output.display());
         }
-        Cmd::Export { input, framing, start, duration, resolution, aspect, size, output, format, clips, handles, graded, draft, cpu, opts } => {
+        Cmd::Export { input, framing, start, duration, resolution, aspect, size, output, format, clips, handles, graded, fps, draft, cpu, opts } => {
             let name = input.file_stem().map_or_else(|| "export".to_owned(), |s| s.to_string_lossy().into_owned());
             let project = if is_project(&input) {
                 if framing.reframe.is_some() || framing.view.is_some() || start.is_some() || duration.is_some() {
@@ -1283,7 +1299,7 @@ fn run() -> Result<()> {
             } else {
                 Target::One(output.unwrap_or_else(|| PathBuf::from(format!("clip.{}", format.extension()))))
             };
-            let written = export(&project, &opts, &ExportOpts { size: (w, h), draft, cpu, format, target }, &mut print_progress())?;
+            let written = export(&project, &opts, &ExportOpts { size: (w, h), draft, cpu, format, target, fps }, &mut print_progress())?;
             for path in &written {
                 // The music beside clips is sound only.
                 let size = if path.extension().is_some_and(|e| e == "wav") { String::new() } else { format!(" ({w}×{h})") };
@@ -1371,7 +1387,7 @@ fn preview_project(project: &project::Project, opts: &StitchOpts, every: Option<
         bail!("the project has no cuts to preview");
     }
     let mut project = project.clone();
-    let (pipelines, of_cut) = cut_pipelines(&mut project, opts, proxy)?;
+    let (pipelines, of_cut) = cut_pipelines(&mut project, opts, proxy, None)?;
     let project = &project;
     let view::Aspect(w, h) = project.aspect.unwrap_or(view::Aspect(16, 9));
     let size = (tile, ((tile * h as usize / w as usize) / 2).max(8) * 2);

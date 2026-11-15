@@ -25,6 +25,8 @@ pub struct Settings {
     /// Apply the cuts' colour effects to those files.
     pub export_graded: bool,
     pub export_format: Format,
+    /// The export's frames a second; none for the clips' own rate.
+    pub export_fps: Option<u32>,
     /// Looking around while paused keys the view at the playhead.
     pub auto_key: bool,
     /// The colour theme, by iced's name for it (`settings_panel::theme_named`).
@@ -59,6 +61,7 @@ impl Default for Settings {
             export_clips: false,
             export_graded: false,
             export_format: Format::Mp4,
+            export_fps: None,
             auto_key: false,
             theme: iced::Theme::KanagawaDragon.to_string(),
             ten_bit: false,

@@ -311,6 +311,8 @@ enum Message {
     /// Grade those files with the cuts' effects.
     ExportGraded(bool),
     ExportFormat(ffmpeg::Format),
+    /// The export's frame rate picked.
+    ExportFps(export_panel::Rate),
     /// Open or close the Export panel.
     ExportPanel,
     /// Open or close the Audio panel.
@@ -569,6 +571,8 @@ struct App {
     export_clips: bool,
     export_graded: bool,
     export_format: ffmpeg::Format,
+    /// The export's frames a second, or the clips' own.
+    export_fps: Option<u32>,
     /// A running export: its cancel flag and how far it has got.
     exporting: Option<(Arc<std::sync::atomic::AtomicBool>, f32)>,
     /// A trim or keyframe drag has saved the edit for undo already.
@@ -718,6 +722,7 @@ impl App {
             export_clips: saved.export_clips,
             export_graded: saved.export_graded,
             export_format: saved.export_format,
+            export_fps: saved.export_fps,
             exporting: None,
             clip: None,
             held: None,
@@ -772,6 +777,7 @@ impl App {
             export_clips: self.export_clips,
             export_graded: self.export_graded,
             export_format: self.export_format,
+            export_fps: self.export_fps,
             auto_key: self.auto_key,
             theme: self.theme.to_string(),
             ten_bit: self.ten_bit,
@@ -1069,7 +1075,7 @@ impl App {
         } else {
             crate::Target::One(path.with_extension(self.export_format.extension()))
         };
-        let out = crate::ExportOpts { size: (w as usize, h as usize), draft: false, cpu: false, format: self.export_format, target };
+        let out = crate::ExportOpts { size: (w as usize, h as usize), draft: false, cpu: false, format: self.export_format, target, fps: self.export_fps.map(f64::from) };
         let opts = crate::StitchOpts {
             stabilize: Some(self.opts.stabilize),
             imu_axes: self.opts.imu_axes,
@@ -1637,6 +1643,7 @@ impl App {
             Message::ExportClips(on) => self.export_clips = on,
             Message::ExportGraded(on) => self.export_graded = on,
             Message::ExportFormat(f) => self.export_format = f,
+            Message::ExportFps(rate) => self.export_fps = rate.0,
             Message::Info(of) => {
                 let path = match of {
                     info::Of::Cut(i) => self.edit.cuts.get(i).map(|c| c.input.clone()),

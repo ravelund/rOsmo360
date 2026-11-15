@@ -28,7 +28,7 @@ I vibed this tool primarily for Linux, since I couldn't find anything close to D
   - **World lock**: the view stays fixed in the world, tilt included.
 - **Free look**: drag to look around, scroll to zoom, and roll the view, or type the view's yaw, pitch, roll and field of view (or drag their names) to frame shots exactly alike.
 - **Projections**: little planet (the default, like DJI Studio), perspective and flat equirectangular, and a **correction** that bends perspective any way towards the little planet, for wide shots.
-- **Every video mode** of the Osmo 360, 100 fps included.
+- **Every video mode** of the Osmo 360, 100 fps included; export at the clips' own frame rate or one you pick.
 - **Smooth playback** from the low-resolution proxy (`.LRF`), switching to the full-resolution frame when paused. On a fast GPU, or an Apple Silicon Mac, it can stream the full-resolution `.OSV` directly.
 - **Hardware decoding** on any GPU vendor: Vulkan Video, VA-API or CUDA on Linux, VideoToolbox on a Mac, with a software fallback.
 - **10-bit decoding** (a setting) keeps the Osmo's full 10 bits, for smoother skies and room to grade.
@@ -272,6 +272,7 @@ rosmo360 export edit.json -o edit.mp4
 rosmo360 export edit.json --clips --handles 1 -o clips/      # a file per cut: "edit - 001.mp4", … with 1 s extra either side, the music as WAVs
 rosmo360 export edit.json --clips --graded -o clips/         # the same, with the cuts' LUTs and colour effects
 rosmo360 export edit.json --format resolve -o edit.mov       # 10-bit DNxHR HQX + PCM, for DaVinci Resolve on Linux
+rosmo360 export edit.json --fps 30 -o edit.mp4               # at 30 fps whatever the clips' rate (100 fps clips: a third of the frames)
 ```
 
 `--format resolve` exists because DaVinci Resolve's free version on Linux reads neither H.264/H.265 nor AAC. DNxHR is an editing format, so the files are large: about 28 MB a second at 1080p. Exports decode at 8 bits unless `ROSMO360_10BIT=1` is set, the command line's version of the player's 10-bit setting; MP4s are dithered down to 8 bits either way.

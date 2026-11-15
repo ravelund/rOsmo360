@@ -19,6 +19,23 @@ fn note<'a>(s: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     text(s).size(13).style(text::secondary).into()
 }
 
+/// A choice of the export's frame rate: the clips' own, or a fixed one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rate(pub Option<u32>);
+
+impl Rate {
+    const ALL: [Rate; 7] = [Rate(None), Rate(Some(24)), Rate(Some(25)), Rate(Some(30)), Rate(Some(50)), Rate(Some(60)), Rate(Some(100))];
+}
+
+impl std::fmt::Display for Rate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            None => f.write_str("As filmed"),
+            Some(fps) => write!(f, "{fps} fps"),
+        }
+    }
+}
+
 impl App {
     pub(super) fn export_panel(&self) -> Element<'_, Message> {
         let (shape, about_shape) = match self.aspect {
@@ -62,6 +79,12 @@ impl App {
             ]
             .spacing(4),
             column![
+                text("Frame rate"),
+                pick_list(&Rate::ALL[..], Some(Rate(self.export_fps)), Message::ExportFps).width(Length::Fill),
+                note("As filmed keeps the clips' own rate. A lower one drops frames, not speed: 100 fps clips at 30 export about three times as fast."),
+            ]
+            .spacing(4),
+            column![
                 text("Format"),
                 format(Format::Mp4, "MP4", "H.264 and AAC: plays anywhere, small."),
                 format(Format::Resolve, "DaVinci Resolve", "10-bit DNxHR HQX with PCM sound in .mov, which Resolve's free Linux version reads, with room to grade. Large: about 28 MB a second at 1080p."),
@@ -74,6 +97,15 @@ impl App {
         ]
         .spacing(14)
         .padding(12);
+        #[cfg(feature = "zero-copy")]
+        let body = body.push(rule::horizontal(1)).push(
+            column![
+                text("Test features"),
+                checkbox(self.zero_copy).label("Zero-copy decoding").on_toggle(Message::ZeroCopy),
+                row![space().width(INDENT), note("Decodes the lenses on the graphics card they're stitched on, without copying each frame through memory: half again to twice as fast, at all 10 bits. Needs Vulkan video decoding; where it can't start, the export decodes as usual.")],
+            ]
+            .spacing(6),
+        );
         container(scrollable(body)).width(WIDTH).height(Length::Fill).into()
     }
 }

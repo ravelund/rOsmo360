@@ -311,9 +311,33 @@ pub fn encode(
         let mut fix = SeamFix::default();
         let mut done = 0;
         let mut last: Option<stitch::Frame> = None;
+        // The picture showing, the output frame it came in at, and the one
+        // decoded after it. Pictures are taken on time as the pipe path
+        // takes them (`Stamp::frame`): each shows from its frame until the
+        // next one's.
+        let mut showing: Option<(crate::zerocopy::Pair, i64)> = None;
+        let mut next = frames.recv().ok().transpose()?;
+        let first = next.as_ref().map(|pair| pair.1);
+        let mut step = 1;
         for n in 0..total {
-            let Ok(pair) = frames.recv() else { break };
-            let pair = pair?;
+            let mut fresh = false;
+            while let (Some(pair), Some(first)) = (&next, &first) {
+                let at = pair.1.frame(first, p.fps);
+                if showing.is_some() && at > n as i64 {
+                    break;
+                }
+                if let Some((_, before)) = &showing {
+                    step = (at - before).max(1);
+                }
+                showing = next.take().map(|pair| (pair, at));
+                fresh = true;
+                next = frames.recv().ok().transpose()?;
+            }
+            // The clip ran out: the last frame is held, as below.
+            let Some((pair, at)) = &showing else { break };
+            if next.is_none() && !fresh && n as i64 >= at + step {
+                break;
+            }
             let t = start + n as f64 / p.fps;
             let views = if p.stab.has_data() { p.stab.rig_from_view(t * 1000.0, p.readout_ms, p.rs_steps) } else { vec![stitch::IDENTITY] };
             if gpu.pending.len() == IN_FLIGHT
@@ -328,7 +352,11 @@ pub fn encode(
             // Pictures without bytes: they're in the planes already.
             let remote = || Frame { pts: t, layout: source::Layout::PerTrack, pictures: (0..2).map(|_| source::Picture { width: w, height: h, deep: true, data: Vec::new() }).collect() };
             let camera = camera(t);
-            gpu.load_pair(rig, &Shown::new(remote(), fix.clone()), &camera, size, &pair)?;
+            if fresh {
+                gpu.load_pair(rig, &Shown::new(remote(), fix.clone()), &camera, size, pair)?;
+            }
+            // A repeated picture's seam is measured again and eased on
+            // towards, as the pipe path does with the copy it's handed.
             fix.apply(rig, SeamSample::from_strips(gpu.seam_strips(rig, (w, h))?), n > 0);
             if !p.cut {
                 fix.field.cut.fill(0.0);

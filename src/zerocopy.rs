@@ -434,9 +434,38 @@ struct Hw(*mut AVBufferRef);
 // SAFETY: an `AVBufferRef` of the thread's own; ffmpeg counts them atomically.
 unsafe impl Send for Hw {}
 
-/// A decoded picture per lens track, still on the GPU. Freed (back to the
-/// decoder's pool) when dropped.
-pub struct Pair(pub [*mut AVFrame; 2]);
+/// A decoded picture per lens track, still on the GPU, and when in the
+/// clip it is. Freed (back to the decoder's pool) when dropped.
+pub struct Pair(pub [*mut AVFrame; 2], pub Stamp);
+
+/// A picture's time as the file has it: in ticks of `num / den` seconds,
+/// in a track of `rate` frames a second.
+#[derive(Clone, Copy)]
+pub struct Stamp {
+    pub pts: i64,
+    pub num: i64,
+    pub den: i64,
+    pub rate: f64,
+}
+
+impl Stamp {
+    /// The output frame, at `fps`, it first shows in, counted from the
+    /// picture stamped `first`: as the pipe path's filters place it
+    /// (`ffmpeg::Out::retime`: shifted back half a source frame, then the
+    /// `fps` filter rounding up), in their arithmetic, so the two paths
+    /// show the same pictures in the same frames.
+    pub fn frame(&self, first: &Stamp, fps: f64) -> i64 {
+        // setpts: a double, rounded to a tick.
+        let shifted = ((self.pts - first.pts) as f64 - 0.5 / self.rate * self.den as f64 / self.num as f64).round_ties_even() as i64;
+        if (fps - fps.round()).abs() < 1e-9 {
+            // A whole rate: ticks to frames exactly, rounded up.
+            let (a, b) = (shifted as i128 * self.num as i128 * fps.round() as i128, self.den as i128);
+            (a + b - 1).div_euclid(b) as i64
+        } else {
+            (shifted as f64 * self.num as f64 / self.den as f64 * fps).ceil() as i64
+        }
+    }
+}
 // SAFETY: the frames are references of this value's own.
 unsafe impl Send for Pair {}
 
@@ -484,10 +513,18 @@ unsafe fn decode(path: &CStr, wanted: &[u32], start: f64, hw: *mut AVBufferRef, 
             // Pictures held while they're copied and queued.
             (*ctx).extra_hw_frames = 8;
             check(avcodec_open2(ctx, codec, null_mut()), "opening a decoder")?;
-            tracks.push((i as c_int, ctx, std::collections::VecDeque::<*mut AVFrame>::new()));
+            tracks.push((i as c_int, ctx, std::collections::VecDeque::<(*mut AVFrame, Stamp)>::new()));
         }
+        // The position as the ffmpeg program reads `-ss` (six decimals of
+        // what the pipe path prints), from the file's own start.
+        let seek_us = {
+            let text = start.to_string();
+            let (whole, part) = text.split_once('.').unwrap_or((&text, ""));
+            let micros: String = part.chars().chain(std::iter::repeat('0')).take(6).collect();
+            whole.parse::<i64>().unwrap_or(0) * 1_000_000 + micros.parse::<i64>().unwrap_or(0) + if (*fmt).start_time == i64::MIN { 0 } else { (*fmt).start_time }
+        };
         if start > 0.0 {
-            check(av_seek_frame(fmt, -1, (start * 1e6) as i64, 1), "seeking")?; // AVSEEK_FLAG_BACKWARD
+            check(av_seek_frame(fmt, -1, seek_us, 1), "seeking")?; // AVSEEK_FLAG_BACKWARD
         }
         let mut packet = av_packet_alloc();
         let mut frame = av_frame_alloc();
@@ -514,33 +551,41 @@ unsafe fn decode(path: &CStr, wanted: &[u32], start: f64, hw: *mut AVBufferRef, 
                         result = check(got, "decoding").map(|_| ());
                         break 'read;
                     }
-                    // From the frame at `start` on (half a frame's slack).
-                    let t = (*frame).best_effort_timestamp as f64 * base.num as f64 / base.den as f64;
-                    if t + 0.01 < start {
+                    // From the first frame at or after `start`, as the ffmpeg
+                    // program's `-ss` keeps them: the position in whole
+                    // microseconds, rounded to the track's ticks.
+                    let from = {
+                        let (a, b) = (seek_us as i128 * base.den as i128, base.num as i128 * 1_000_000);
+                        ((2 * a + b).div_euclid(2 * b)) as i64
+                    };
+                    if (*frame).best_effort_timestamp < from {
                         av_frame_unref(frame);
                         continue;
                     }
                     let kept = av_frame_alloc();
                     av_frame_move_ref(kept, frame);
-                    ready.push_back(kept);
+                    let rate = (*streams[*stream as usize]).r_frame_rate;
+                    ready.push_back((kept, Stamp { pts: (*kept).best_effort_timestamp, num: base.num as i64, den: base.den as i64, rate: rate.num as f64 / rate.den.max(1) as f64 }));
                 }
             }
             av_packet_unref(packet);
             while tracks.iter().all(|t| !t.2.is_empty()) {
                 let mut pair = [null_mut(); 2];
+                // Timed by the first track's picture.
+                let at = tracks[0].2[0].1;
                 for (k, t) in tracks.iter_mut().enumerate().take(2) {
-                    pair[k] = t.2.pop_front().unwrap();
+                    pair[k] = t.2.pop_front().unwrap().0;
                 }
                 if tracks.len() == 1 {
                     pair[1] = av_frame_clone(pair[0]);
                 }
-                if tx.send(Ok(Pair(pair))).is_err() {
+                if tx.send(Ok(Pair(pair, at))).is_err() {
                     break 'read;
                 }
             }
         }
         for (_, ctx, ready) in tracks.iter_mut() {
-            for f in ready.iter_mut() {
+            for (f, _) in ready.iter_mut() {
                 av_frame_free(f);
             }
             avcodec_free_context(ctx);
