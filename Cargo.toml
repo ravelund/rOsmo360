@@ -22,6 +22,22 @@ serde_json = "1.0.151"
 # the pin on purpose, bumping FORMAT if the rig or attitude changes.
 telemetry-parser = { git = "https://github.com/AdrianEddy/telemetry-parser.git", rev = "8bd825db33700c4d4472fae61eada27a65aea7a8", version = "0.4.0" }
 
+# Zero-copy decode (a prototype, CLAUDE.md item 1): links the system's
+# ffmpeg libraries to decode in-process. Off by default, so release builds
+# neither link them nor need their headers.
+[dependencies.ash]
+# wgpu's own (the same version): the raw Vulkan calls zero-copy makes on
+# the device it shares with wgpu.
+version = "0.38"
+optional = true
+
+[features]
+zero-copy = ["dep:bindgen", "dep:pkg-config", "dep:ash"]
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }
+pkg-config = { version = "0.3", optional = true }
+
 # The file managers' D-Bus interface, so Show in folder selects the file
 # (the Info panel).
 [target.'cfg(target_os = "linux")'.dependencies]

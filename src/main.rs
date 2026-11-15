@@ -3,6 +3,8 @@ mod cache;
 mod check;
 mod dissolve;
 mod transition;
+#[cfg(feature = "zero-copy")]
+mod zerocopy;
 mod dji;
 mod exposure;
 mod grade;
@@ -57,6 +59,19 @@ enum Cmd {
     Imu { input: PathBuf },
     /// The clip's length, frame rate, recording time and what it holds, as JSON.
     Info { input: PathBuf },
+    /// Zero-copy prototype: decode the lens tracks in-process with the
+    /// frames kept on the GPU, and say how fast.
+    #[cfg(feature = "zero-copy")]
+    #[command(hide = true)]
+    ZeroCopyProbe {
+        input: PathBuf,
+        /// ffmpeg's device: vulkan, cuda or vaapi.
+        #[arg(long, default_value = "vulkan")]
+        hw: String,
+        /// Seconds of the clip to decode.
+        #[arg(short, long, default_value_t = 20.0)]
+        duration: f64,
+    },
     /// List what in a project is likely a mistake, one line each (edit
     /// time, cut, what): cuts out of the order they were filmed in, a cut
     /// repeating footage the cut before shows, crossfades between cuts of one
@@ -529,6 +544,12 @@ struct StitchOpts {
     /// shift. Experimental.
     #[arg(long)]
     flow: bool,
+    /// Decode an export's lens tracks on the GPU it stitches on, without
+    /// copying each frame through memory (Linux, Vulkan video decoding;
+    /// the usual way where it can't start). Experimental.
+    #[cfg(feature = "zero-copy")]
+    #[arg(long)]
+    zero_copy: bool,
     /// Give each lens the other's video track. Which track a lens was
     /// recorded to isn't in the clip (telemetry-parser goes by the camera
     /// model), and swapped back-to-back lenses still stitch cleanly, only
@@ -552,6 +573,8 @@ impl Default for StitchOpts {
             no_align: false,
             no_cut: false,
             flow: false,
+            #[cfg(feature = "zero-copy")]
+            zero_copy: false,
             swap_lenses: false,
         }
     }
@@ -644,6 +667,10 @@ impl Pipeline {
         let aligner = if opts.no_align || opts.only.is_some() { None } else { align::Aligner::new(&lenses) };
         if opts.flow {
             align::set_flow(true);
+        }
+        #[cfg(feature = "zero-copy")]
+        if opts.zero_copy {
+            zerocopy::set_on(true);
         }
         let hw = ffmpeg::Hwaccel::pick(input, tracks[0])?;
         Ok(Pipeline {
@@ -1200,6 +1227,12 @@ fn run() -> Result<()> {
             }
         }
         Cmd::Info { input } => info(&input)?,
+        #[cfg(feature = "zero-copy")]
+        Cmd::ZeroCopyProbe { input, hw, duration } => {
+            let p = zerocopy::probe(&input, &hw, duration)?;
+            let most = p.frames.iter().copied().max().unwrap_or(0);
+            println!("{hw}: {:?} frames in {:.2} s = {:.1} fps of both lenses; first frame's mean luma {:.3} (10-bit)", p.frames, p.seconds, most as f64 / p.seconds, p.first_luma);
+        }
         Cmd::Check { project, fast_pan, opts } => check::check(&project, &opts, fast_pan)?,
         Cmd::Play { input, osv_size, hwaccel, stabilize, imu_axes, world_z_down } => {
             player::run(input, player::Launch { osv_size, hw: hwaccel, stabilize, imu_axes, world_z_down })?;

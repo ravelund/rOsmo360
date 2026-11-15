@@ -49,6 +49,15 @@ pub struct Gpu {
     deep: bool,
     /// The adapter's name, for the log.
     pub name: String,
+    /// Zero-copy decoding on this device (the prototype; `zerocopy::on`
+    /// asks for it), and the lens planes made ready for its copies.
+    #[cfg(feature = "zero-copy")]
+    shared: Option<crate::zerocopy::Shared>,
+    #[cfg(feature = "zero-copy")]
+    primed: Vec<wgpu::Texture>,
+    /// The seam strips read off those planes.
+    #[cfg(feature = "zero-copy")]
+    gather: Option<super::strips::Gather>,
 }
 
 /// What a frame renders into, and the buffer it is read back through.
@@ -72,9 +81,69 @@ impl Gpu {
         if info.device_type == wgpu::DeviceType::Cpu {
             bail!("only a software renderer ({})", info.name);
         }
+        #[cfg(feature = "zero-copy")]
+        if crate::zerocopy::on() {
+            match crate::zerocopy::Shared::open(&adapter) {
+                Ok((device, queue, shared)) => {
+                    let stitcher = gpu::Pipeline::create(&device, format(deep));
+                    return Ok(Gpu { device, queue, stitcher, size: (0, 0), targets: Vec::new(), pending: VecDeque::new(), next: 0, frames: 0, deep, name: info.name, shared: Some(shared), primed: Vec::new(), gather: None });
+                }
+                // The pipe path is always there.
+                Err(e) => eprintln!("zero-copy decoding isn't available ({e:#}); decoding as usual"),
+            }
+        }
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("export"), ..Default::default() }))?;
         let stitcher = gpu::Pipeline::create(&device, format(deep));
-        Ok(Gpu { device, queue, stitcher, size: (0, 0), targets: Vec::new(), pending: VecDeque::new(), next: 0, frames: 0, deep, name: info.name })
+        Ok(Gpu {
+            device,
+            queue,
+            stitcher,
+            size: (0, 0),
+            targets: Vec::new(),
+            pending: VecDeque::new(),
+            next: 0,
+            frames: 0,
+            deep,
+            name: info.name,
+            #[cfg(feature = "zero-copy")]
+            shared: None,
+            #[cfg(feature = "zero-copy")]
+            primed: Vec::new(),
+            #[cfg(feature = "zero-copy")]
+            gather: None,
+        })
+    }
+
+    /// Puts a zero-copy pair's lens pictures into the stitcher's planes, on
+    /// the GPU, for the frames drawn from here on (`submit` with pictures
+    /// that hold no bytes).
+    #[cfg(feature = "zero-copy")]
+    pub fn load_pair(&mut self, rig: &Rig, shown: &Shown, camera: &Camera, (w, h): (usize, usize), pair: &crate::zerocopy::Pair) -> Result<()> {
+        // The copy isn't in wgpu's queue: the frames before must have been
+        // drawn from the planes before they change.
+        self.device.poll(wgpu::PollType::wait_indefinitely())?;
+        self.stitcher.prepare_frame(&self.device, &self.queue, rig, shown, camera, &[stitch::IDENTITY], [w as f32, h as f32], [0.0, 0.0]);
+        let planes: Vec<wgpu::Texture> = self.stitcher.lens_planes().iter().flatten().map(|&t| t.clone()).collect();
+        if planes != self.primed {
+            // New planes: written once through wgpu and drawn from once,
+            // which leaves them in the layout it samples them in and
+            // believes them in from then on.
+            self.stitcher.clear_lens_planes(&self.queue);
+            let scratch = self.make_target(w, h);
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            self.stitcher.draw(&mut encoder, &scratch.view, &Rectangle { x: 0, y: 0, width: w as u32, height: h as u32 });
+            self.queue.submit([encoder.finish()]);
+            self.device.poll(wgpu::PollType::wait_indefinitely())?;
+            self.primed = planes;
+        }
+        self.shared.as_ref().context("zero-copy isn't on")?.copy(pair, self.stitcher.lens_planes())
+    }
+
+    /// The seam strips of the pictures `load_pair` put in the planes.
+    #[cfg(feature = "zero-copy")]
+    pub fn seam_strips(&mut self, rig: &Rig, picture: (u32, u32)) -> Result<Option<crate::align::Strips>> {
+        let gather = self.gather.get_or_insert_with(|| super::strips::Gather::new(&self.device));
+        gather.strips(&self.device, &self.queue, rig, self.stitcher.lens_planes(), picture)
     }
 
     /// Starts rendering `shown` through `camera` at `size`; `finish` hands
@@ -92,8 +161,8 @@ impl Gpu {
         // A 16-bit target keeps the precision itself.
         self.stitcher.dither = (!self.deep).then_some(self.frames);
         self.frames = self.frames.wrapping_add(1);
-        let target = &self.targets[slot];
         self.stitcher.prepare_frame(&self.device, &self.queue, rig, shown, camera, views, [w as f32, h as f32], [0.0, 0.0]);
+        let target = &self.targets[slot];
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.stitcher.draw(&mut encoder, &target.view, &Rectangle { x: 0, y: 0, width: w as u32, height: h as u32 });
         encoder.copy_texture_to_buffer(
@@ -231,6 +300,54 @@ pub fn encode(
         (None, Some(proxy)) => Kind::Lrf(proxy.clone()),
         (None, None) => Kind::Osv { path: p.input.clone(), tracks: p.tracks.clone(), size: None },
     };
+    // Zero-copy (the prototype): the lens tracks decoded on this device,
+    // their pictures never leaving the GPU; the seam is measured from
+    // strips sampled there. Not with exposure matching, which wants
+    // samples from all over the pictures.
+    #[cfg(feature = "zero-copy")]
+    if let (Some(shared), Kind::Osv { .. }, None) = (&gpu.shared, &kind, &clip.rig.seam) {
+        let frames = shared.stream(&p.input, &[0, 1], start)?;
+        let rig = &clip.rig;
+        let mut fix = SeamFix::default();
+        let mut done = 0;
+        let mut last: Option<stitch::Frame> = None;
+        for n in 0..total {
+            let Ok(pair) = frames.recv() else { break };
+            let pair = pair?;
+            let t = start + n as f64 / p.fps;
+            let views = if p.stab.has_data() { p.stab.rig_from_view(t * 1000.0, p.readout_ms, p.rs_steps) } else { vec![stitch::IDENTITY] };
+            if gpu.pending.len() == IN_FLIGHT
+                && let Some(frame) = gpu.finish()?
+            {
+                encoder.write(&frame)?;
+                done += 1;
+                tick(done)?;
+                last = Some(frame);
+            }
+            let (w, h) = pair.size();
+            // Pictures without bytes: they're in the planes already.
+            let remote = || Frame { pts: t, layout: source::Layout::PerTrack, pictures: (0..2).map(|_| source::Picture { width: w, height: h, deep: true, data: Vec::new() }).collect() };
+            let camera = camera(t);
+            gpu.load_pair(rig, &Shown::new(remote(), fix.clone()), &camera, size, &pair)?;
+            fix.apply(rig, SeamSample::from_strips(gpu.seam_strips(rig, (w, h))?), n > 0);
+            if !p.cut {
+                fix.field.cut.fill(0.0);
+            }
+            gpu.submit(rig, &Shown::new(remote(), fix.clone()), &camera, &views, size);
+        }
+        while let Some(frame) = gpu.finish()? {
+            encoder.write(&frame)?;
+            done += 1;
+            tick(done)?;
+            last = Some(frame);
+        }
+        let last = last.context("no frames decoded")?;
+        p.warn_held(total - done);
+        for _ in done..total {
+            encoder.write(&last)?;
+        }
+        return Ok(());
+    }
     let stream = source::spawn(kind, clip.hw, start, p.fps)?;
     let failed = stream.error.clone();
     let rig = &clip.rig;

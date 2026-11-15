@@ -156,6 +156,17 @@ fn ycc(pic: &Picture, x: usize, y: usize) -> [f64; 3] {
     ]
 }
 
+/// The mean display RGB of a 10-bit pixel stored as `y`, `cb`, `cr` (16-bit
+/// samples, the 10 bits in the high ones): what the seam alignment reads
+/// through `Frame::rgb_at`, for pixels fetched on the GPU instead. Must
+/// match `ycc` and `rgb_at`.
+#[cfg(feature = "zero-copy")]
+pub fn brightness(y: u16, cb: u16, cr: u16) -> f64 {
+    let s = |v: u16| v as f64 / 65280.0;
+    let (yy, cu, cv) = ((s(y) - 16.0 / 255.0) * (255.0 / 219.0), (s(cb) - 128.0 / 255.0) * (255.0 / 224.0), (s(cr) - 128.0 / 255.0) * (255.0 / 224.0));
+    [yy + 1.5748 * cv, yy - 0.1873 * cu - 0.4681 * cv, yy + 1.8556 * cu].map(|v| v.clamp(0.0, 1.0)).iter().sum::<f64>() / 3.0
+}
+
 #[derive(Clone)]
 pub enum Kind {
     Lrf(PathBuf),

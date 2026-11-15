@@ -11,6 +11,8 @@ mod export_panel;
 mod handles;
 mod info;
 mod settings_panel;
+#[cfg(feature = "zero-copy")]
+mod strips;
 mod transitions;
 mod meter;
 mod playback;
@@ -325,6 +327,9 @@ enum Message {
     Theme(Theme),
     TenBit(bool),
     FineSeam(bool),
+    /// Zero-copy decoding for exports, a test feature.
+    #[cfg(feature = "zero-copy")]
+    ZeroCopy(bool),
     /// Add a `.cube` to the LUT library (a file dialog), the file picked,
     /// take one out, and choose the one D-Log M clips get.
     AddLut,
@@ -621,6 +626,9 @@ struct App {
     /// 10-bit tracks decode at 10 bits (`source::deep`).
     ten_bit: bool,
     fine_seam: bool,
+    /// Kept in the settings whatever the build; only one with the
+    /// `zero-copy` feature shows and uses it.
+    zero_copy: bool,
     /// The library LUT new D-Log M cuts get, and the library's LUTs.
     dlog_m_lut: Option<String>,
     luts: Vec<String>,
@@ -661,12 +669,15 @@ impl App {
         audio::set_listening(if saved.muted { 0.0 } else { saved.volume });
         source::set_deep(saved.ten_bit);
         crate::align::set_flow(saved.fine_seam);
+        #[cfg(feature = "zero-copy")]
+        crate::zerocopy::set_on(saved.zero_copy);
         App {
             opts,
             followed: Default::default(),
             theme: settings_panel::theme_named(&saved.theme),
             ten_bit: saved.ten_bit,
             fine_seam: saved.fine_seam,
+            zero_copy: saved.zero_copy,
             dlog_m_lut: saved.dlog_m_lut.clone(),
             luts: crate::lut::library_names(),
             logo: image::Handle::from_bytes(LOGO),
@@ -765,6 +776,7 @@ impl App {
             theme: self.theme.to_string(),
             ten_bit: self.ten_bit,
             fine_seam: self.fine_seam,
+            zero_copy: self.zero_copy,
             dlog_m_lut: self.dlog_m_lut.clone(),
             timeline_scale: self.split_kept,
             view_angles: self.angles_shown,
@@ -1674,6 +1686,11 @@ impl App {
             Message::SplitDrag(dy) => self.split = (self.split_kept - dy / timeline::SCALABLE).clamp(*timeline::SCALES.start(), *timeline::SCALES.end()),
             Message::SplitDone => self.split_kept = self.split,
             Message::SplitReset => (self.split, self.split_kept) = (1.0, 1.0),
+            #[cfg(feature = "zero-copy")]
+            Message::ZeroCopy(on) => {
+                self.zero_copy = on;
+                crate::zerocopy::set_on(on);
+            }
             Message::FineSeam(on) => {
                 self.fine_seam = on;
                 crate::align::set_flow(on);

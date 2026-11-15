@@ -31,10 +31,10 @@ pub const TAPER_WIDTH: f64 = 12.0;
 pub const EASE: f32 = 0.3;
 
 /// The strip both lenses are unrolled onto: φ columns, α rows.
-const STRIP_W: usize = 1024;
+pub const STRIP_W: usize = 1024;
 const STRIP_ALPHA_LO: f64 = 74.0;
 const STRIP_STEP: f64 = 0.2;
-const STRIP_H: usize = 161;
+pub const STRIP_H: usize = 161;
 /// Largest shift searched, in strip rows each way per lens (±6° in all).
 const MAX_HALF: isize = 15;
 /// Patch half-size in columns and rows.
@@ -152,6 +152,13 @@ impl Field {
 pub struct Strips([Vec<f32>; 2]);
 
 impl Strips {
+    /// From each lens's strip sampled elsewhere (on the GPU, for zero-copy
+    /// decoding), as `Aligner::strips` lays one out.
+    #[cfg(feature = "zero-copy")]
+    pub fn from_lenses(lenses: [Vec<f32>; 2]) -> Self {
+        Strips(lenses)
+    }
+
     /// |lens 0 − lens 1| at strip pixel (x, y) once `field` is applied.
     fn disagreement(&self, field: &Field, x: usize, y: usize) -> f64 {
         let a = STRIP_ALPHA_LO + y as f64 * STRIP_STEP;
@@ -206,6 +213,13 @@ impl Aligner {
 
     /// Both lenses unrolled onto the strip. `luma(lens, u, v)` returns 0..1
     /// at that lens's picture pixel.
+    /// Per strip pixel, where it is in lens 0's and lens 1's picture: what
+    /// `strips` samples.
+    #[cfg(feature = "zero-copy")]
+    pub fn strip_points(&self) -> &[[Option<(f64, f64)>; 2]] {
+        &self.strip
+    }
+
     pub fn strips(&self, luma: impl Fn(usize, f64, f64) -> Option<f64> + Sync) -> Strips {
         Strips([0, 1].map(|l| self.strip.par_iter().map(|at| at[l].and_then(|(u, v)| luma(l, u, v)).map_or(f32::NAN, |v| v as f32)).collect()))
     }
