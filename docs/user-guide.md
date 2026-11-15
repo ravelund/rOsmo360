@@ -516,7 +516,9 @@ Click **export** (an arrow out of a tray) in the top bar, or press **Ctrl+E**, f
    - **MP4**: H.264 video and AAC sound. Plays anywhere, small.
    - **DaVinci Resolve**: 10-bit DNxHR HQX video with uncompressed PCM sound in a `.mov`. DaVinci Resolve's free version on Linux can't read H.264, H.265 or AAC, and 10 bits leave room to grade. The files are large, about 28 MB a second at 1080p, as editing formats are.
 4. **Clips**: tick **A file per cut** to write each cut to its own file instead of one video, for finishing in another editor (see below).
-4. Click **Export…** and choose where to save.
+5. Click **Export…** and choose where to save.
+
+**Test features → Zero-copy decoding** (Linux; an experiment, off by default) decodes the two lenses on the graphics card they're stitched on, without copying each frame through the computer's memory. Exports from full-size `.OSV` clips then run about half again to twice as fast, and always at all 10 bits, with the same picture as a 10-bit export gives without it. It needs a graphics card and driver with Vulkan video decoding (a recent NVIDIA driver has it); where it can't start, the export says so in the terminal and decodes as usual. It has only been tried on NVIDIA so far.
 
 The export renders the whole edit at full resolution, with the sound joined across the cuts and the music mixed in. Each cut uses its own keyframes, stabilisation and effects; transitions, volume points, levels and the fades are applied; titles and overlays are drawn in; and the export follows the rolling-shutter setting. Progress shows in the top bar, with a crossed circle to stop it; a cancelled export leaves no half-finished file. Your choices are remembered.
 

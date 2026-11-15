@@ -1,0 +1,15 @@
+The rOsmo360 binary contains parts of FFmpeg (https://ffmpeg.org): its
+libavformat, libavcodec and libavutil libraries, built without GPL or nonfree
+parts, to read an .OSV's video tracks and decode them on the graphics card
+(the Export panel's "Zero-copy decoding").
+
+They are licensed under the GNU Lesser General Public License, version 2.1 or
+later: see COPYING.LGPLv2.1 beside this file. The exact source they were built
+from, with the script that built them, is rOsmo360-linux-ffmpeg-sources.tar on
+the release page this build came from:
+
+  https://github.com/ravelund/rOsmo360/releases
+
+rOsmo360 itself is open source (MIT or Apache 2.0), so the binary can be
+rebuilt against a changed FFmpeg: packaging/build-linux.sh in its repository
+does that.

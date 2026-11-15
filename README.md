@@ -103,6 +103,8 @@ cargo build --release
 
 The program is `target/release/rosmo360`. `packaging/build-release.sh` builds the release files into `dist/`, inside an Ubuntu 22.04 container (docker), so they run on older distributions too.
 
+The Linux release builds also have **zero-copy decoding** for exports (a test feature in the Export panel). It links ffmpeg's libraries into the program: `cargo build --release --features zero-copy` uses your system's (their development files, the Vulkan headers and libclang are needed), and `packaging/build-linux.sh` builds the release's way, with a small decode-only ffmpeg of its own linked in statically.
+
 On an **Apple Silicon Mac** (with [Rust](https://rustup.rs) and `xcode-select --install`), `sh packaging/macos/build.sh` builds it, fetches a static arm64 ffmpeg (GPL, with VideoToolbox) and makes `target/release/rOsmo360.app` to open from the Finder. There's no signed download for the Mac yet.
 
 For **Windows**, `sh packaging/windows/build.sh` cross-builds on Linux (docker, MinGW): `rosmo360.exe` with its icon, beside an ffmpeg built from pinned sources (GPL, with Direct3D 11, NVDEC and Vulkan decoding), zipped as `target/windows/rOsmo360-x86_64-windows.zip`, with those sources in `rOsmo360-windows-ffmpeg-sources.tar`.
@@ -330,6 +332,8 @@ rOsmo360 is licensed under either of
 - the [Apache License, Version 2.0](LICENSE-APACHE),
 
 at your option. Unless you state otherwise, any contribution you submit for inclusion in rOsmo360 is dual-licensed as above, without any additional terms or conditions.
+
+The Linux release binaries contain parts of [FFmpeg](https://ffmpeg.org) (its libavformat, libavcodec and libavutil, built without GPL parts) under the LGPL 2.1 or later, for zero-copy decoding; their licence is included with each build and their source is `rOsmo360-linux-ffmpeg-sources.tar` on the release page.
 
 The built-in fonts in [`fonts/`](fonts/) keep their own licences (the SIL Open Font License 1.1, and Apache 2.0 for Permanent Marker), included beside each font and with every release; see [`fonts/README.md`](fonts/README.md).
 

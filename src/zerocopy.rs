@@ -137,7 +137,7 @@ pub fn probe(input: &Path, hw: &str, seconds: f64) -> Result<Probed> {
                 }
                 check(avcodec_send_packet(t.ctx, if ended { null() } else { packet }), "decoding")?;
                 loop {
-                    let got = avcodec_receive_frame_flags(t.ctx, frame, 0);
+                    let got = avcodec_receive_frame(t.ctx, frame);
                     if got == AGAIN || got == EOF {
                         break;
                     }
@@ -273,6 +273,9 @@ impl Shared {
             let instance = hal_adapter.shared_instance();
 
             // ffmpeg's side: the device as it is, and which queues are its.
+            // Only errors on the terminal: opening an .OSV has ffmpeg remark
+            // on its data tracks at every cut.
+            av_log_set_level(16);
             let hw = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN);
             if hw.is_null() {
                 bail!("ffmpeg has no Vulkan support");
@@ -360,8 +363,11 @@ impl Shared {
                         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                         .subresource_range(colour(vk::ImageAspectFlags::COLOR))
                 };
+                // The bindings give the access flags as 32 or 64 bits, by the
+                // compiler that read the header.
+                #[allow(clippy::unnecessary_cast)]
                 let before = [
-                    whole(src, vk::ImageLayout::from_raw((*vkf).layout[0] as i32), vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags2::from_raw((*vkf).access[0]), vk::AccessFlags2::TRANSFER_READ),
+                    whole(src, vk::ImageLayout::from_raw((*vkf).layout[0] as i32), vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags2::from_raw((*vkf).access[0] as u64), vk::AccessFlags2::TRANSFER_READ),
                     whole(dst[0], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags2::SHADER_READ, vk::AccessFlags2::TRANSFER_WRITE),
                     whole(dst[1], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags2::SHADER_READ, vk::AccessFlags2::TRANSFER_WRITE),
                 ];
@@ -543,7 +549,7 @@ unsafe fn decode(path: &CStr, wanted: &[u32], start: f64, hw: *mut AVBufferRef, 
                     break 'read;
                 }
                 loop {
-                    let got = avcodec_receive_frame_flags(*ctx, frame, 0);
+                    let got = avcodec_receive_frame(*ctx, frame);
                     if got == AGAIN || got == EOF {
                         break;
                     }

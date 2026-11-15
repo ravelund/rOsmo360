@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the release assets into dist/: the binary archive (with install.sh), the
-# AppImage, the Flatpak with its ffmpeg's sources, the Windows zip with its
+# AppImage, the sources of the ffmpeg libraries linked into the Linux binary,
+# the Flatpak with its ffmpeg's sources, the Windows zip with its
 # ffmpeg's sources, install.sh on its own and SHA256SUMS. Needs docker, flatpak with org.flatpak.Builder (flatpak install
 # --user flathub org.flatpak.Builder) and network access.
 set -eu
@@ -9,11 +10,13 @@ version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 dist=dist
 rm -rf "$dist" && mkdir -p "$dist"
 
-docker build -q -t rosmo360-build:jammy packaging >/dev/null
-docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/src -w /src \
-    -e CARGO_TARGET_DIR=/src/target/jammy rosmo360-build:jammy cargo build --release --locked
+# The binary, with ffmpeg's decoding libraries (LGPL) linked in for
+# zero-copy decoding, built fresh so they match the sources shipped.
+sh packaging/build-linux.sh --fresh-libav
 exe=target/jammy/release/rosmo360
-strip "$exe"
+libav=target/jammy/libav
+# The LGPL's corresponding source: what those libraries were built from, and how.
+tar -cf "$dist/rOsmo360-linux-ffmpeg-sources.tar" -C target/jammy/libav-src tarballs
 
 # Archive: rosmo360-x86_64-linux/ with the binary, install script, menu entry and icons.
 # The asset names carry no version, so .../releases/latest/download/<name> stays valid.
@@ -25,6 +28,8 @@ chmod 755 "$pkg/rosmo360" "$pkg/install.sh"
 # The built-in fonts are inside the binary; their licences go beside it.
 for d in fonts/*/; do mkdir -p "$pkg/fonts/$(basename "$d")" && cp "$d"*.txt "$pkg/fonts/$(basename "$d")/"; done
 cp fonts/README.md "$pkg/fonts/"
+# ffmpeg's libraries are inside the binary too: their licence, and where the source is.
+mkdir -p "$pkg/ffmpeg" && cp "$libav/COPYING.LGPLv2.1" "$pkg/ffmpeg/" && cp packaging/ffmpeg-linked.txt "$pkg/ffmpeg/README.txt"
 tar -czf "$dist/rosmo360-x86_64-linux.tar.gz" -C "$dist" rosmo360-x86_64-linux
 cp packaging/install.sh "$dist/install.sh"
 
@@ -39,6 +44,7 @@ cp packaging/rosmo360.png "$app/" && cp packaging/rosmo360.png "$app/usr/share/i
 ln -s rosmo360.png "$app/.DirIcon"
 for d in fonts/*/; do mkdir -p "$app/usr/share/licenses/rosmo360/fonts/$(basename "$d")" && cp "$d"*.txt "$app/usr/share/licenses/rosmo360/fonts/$(basename "$d")/"; done
 cp fonts/README.md "$app/usr/share/licenses/rosmo360/fonts/"
+mkdir -p "$app/usr/share/licenses/rosmo360/ffmpeg" && cp "$libav/COPYING.LGPLv2.1" "$app/usr/share/licenses/rosmo360/ffmpeg/" && cp packaging/ffmpeg-linked.txt "$app/usr/share/licenses/rosmo360/ffmpeg/README.txt"
 tool=target/appimagetool-x86_64.AppImage
 if [ ! -x "$tool" ]; then
     curl -fsSL https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -o "$tool"
@@ -72,7 +78,7 @@ rm -rf "$src"
 sh packaging/windows/build.sh --fresh-ffmpeg
 cp target/windows/rOsmo360-x86_64-windows.zip target/windows/rOsmo360-windows-ffmpeg-sources.tar "$dist/"
 
-(cd "$dist" && sha256sum rosmo360-x86_64-linux.tar.gz rOsmo360-x86_64.AppImage rOsmo360-x86_64.flatpak \
+(cd "$dist" && sha256sum rosmo360-x86_64-linux.tar.gz rOsmo360-x86_64.AppImage rOsmo360-linux-ffmpeg-sources.tar rOsmo360-x86_64.flatpak \
     rOsmo360-flatpak-ffmpeg-sources.tar rOsmo360-x86_64-windows.zip rOsmo360-windows-ffmpeg-sources.tar \
     install.sh > SHA256SUMS)
 ls -l "$dist"

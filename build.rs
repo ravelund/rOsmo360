@@ -3,6 +3,8 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=ROSMO360_LIBAV_STATIC");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     #[cfg(feature = "zero-copy")]
     bind();
 }
@@ -11,7 +13,12 @@ fn main() {
 fn bind() {
     let mut includes = Vec::new();
     for lib in ["libavformat", "libavcodec", "libavutil"] {
-        let found = pkg_config::probe_library(lib).unwrap_or_else(|e| panic!("the zero-copy feature needs {lib}'s development files: {e}"));
+        // The release build links its own small ffmpeg in (packaging/libav.sh);
+        // otherwise the system's, as a shared library.
+        let found = pkg_config::Config::new()
+            .statik(std::env::var_os("ROSMO360_LIBAV_STATIC").is_some())
+            .probe(lib)
+            .unwrap_or_else(|e| panic!("the zero-copy feature needs {lib}'s development files: {e}"));
         includes.extend(found.include_paths);
     }
     let bindings = bindgen::Builder::default()

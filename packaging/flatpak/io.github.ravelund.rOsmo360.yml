@@ -71,6 +71,9 @@ modules:
       # The built-in fonts are inside the binary; their licences beside it.
       - for d in fonts/*/; do install -Dm644 -t /app/share/licenses/rosmo360/fonts/$(basename $d) $d*.txt; done
       - install -Dm644 -t /app/share/licenses/rosmo360/fonts fonts/README.md
+      # ffmpeg's decoding libraries (LGPL) are inside the binary as well.
+      - install -Dm644 COPYING.LGPLv2.1 /app/share/licenses/rosmo360/ffmpeg/COPYING.LGPLv2.1
+      - install -Dm644 ffmpeg-linked.txt /app/share/licenses/rosmo360/ffmpeg/README.txt
     sources:
       - type: file
         path: ../../target/jammy/release/rosmo360
@@ -88,6 +91,10 @@ modules:
         path: ../../LICENSE-MIT
       - type: file
         path: ../../LICENSE-APACHE
+      - type: file
+        path: ../../target/jammy/libav/COPYING.LGPLv2.1
+      - type: file
+        path: ../ffmpeg-linked.txt
       - type: dir
         path: ../../fonts
         dest: fonts
