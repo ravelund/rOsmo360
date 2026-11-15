@@ -3,6 +3,8 @@ mod cache;
 mod check;
 mod dissolve;
 mod transition;
+#[cfg(feature = "zero-copy")]
+mod zerocopy;
 mod dji;
 mod exposure;
 mod grade;
@@ -57,6 +59,19 @@ enum Cmd {
     Imu { input: PathBuf },
     /// The clip's length, frame rate, recording time and what it holds, as JSON.
     Info { input: PathBuf },
+    /// Zero-copy prototype: decode the lens tracks in-process with the
+    /// frames kept on the GPU, and say how fast.
+    #[cfg(feature = "zero-copy")]
+    #[command(hide = true)]
+    ZeroCopyProbe {
+        input: PathBuf,
+        /// ffmpeg's device: vulkan, cuda or vaapi.
+        #[arg(long, default_value = "vulkan")]
+        hw: String,
+        /// Seconds of the clip to decode.
+        #[arg(short, long, default_value_t = 20.0)]
+        duration: f64,
+    },
     /// List what in a project is likely a mistake, one line each (edit
     /// time, cut, what): cuts out of the order they were filmed in, a cut
     /// repeating footage the cut before shows, crossfades between cuts of one
@@ -1200,6 +1215,12 @@ fn run() -> Result<()> {
             }
         }
         Cmd::Info { input } => info(&input)?,
+        #[cfg(feature = "zero-copy")]
+        Cmd::ZeroCopyProbe { input, hw, duration } => {
+            let p = zerocopy::probe(&input, &hw, duration)?;
+            let most = p.frames.iter().copied().max().unwrap_or(0);
+            println!("{hw}: {:?} frames in {:.2} s = {:.1} fps of both lenses; first frame's mean luma {:.3} (10-bit)", p.frames, p.seconds, most as f64 / p.seconds, p.first_luma);
+        }
         Cmd::Check { project, fast_pan, opts } => check::check(&project, &opts, fast_pan)?,
         Cmd::Play { input, osv_size, hwaccel, stabilize, imu_axes, world_z_down } => {
             player::run(input, player::Launch { osv_size, hw: hwaccel, stabilize, imu_axes, world_z_down })?;
