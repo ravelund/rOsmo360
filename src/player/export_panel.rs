@@ -44,7 +44,7 @@ impl App {
         };
         let [w, h] = shape.size(self.resolution.short_side());
         let what = if self.export_clips {
-            format!("{} clips, {w} × {h}", self.edit.cuts.len())
+            format!("{} clips, {w} × {h}", self.edit.cuts.len() + self.edit.upper.len())
         } else {
             format!("{w} × {h}, {}", clock(self.edit.duration()))
         };

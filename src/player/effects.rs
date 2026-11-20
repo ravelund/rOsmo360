@@ -45,9 +45,9 @@ pub enum EffectMsg {
     FadeIn(f64),
     FadeOut(f64),
     /// Jump to cut `cut`'s effect keyframe at clip time `t`.
-    Jump(usize, f64),
+    Jump(super::edit::CutRef, f64),
     /// Cut `cut`'s effect keyframe `key` dragged to clip time `t`.
-    KeyMove(usize, usize, f64),
+    KeyMove(super::edit::CutRef, usize, f64),
     /// The cut's LUT (how much of it is effect `LUT`, keyframed).
     Lut(LutChoice),
 }
@@ -135,7 +135,7 @@ const SWATCHES: [[u8; 3]; 9] = [[255, 255, 255], [0, 0, 0], [255, 214, 10], [255
 /// lane shown).
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
-    Cut(usize),
+    Cut(super::edit::CutRef),
     Overlay(crate::overlay::ItemRef),
 }
 
@@ -160,19 +160,19 @@ impl App {
         {
             return Some((Target::Overlay(i), item.local(t)));
         }
-        self.playing_cut().map(|(_, t)| (Target::Cut(self.current), t))
+        self.playing_cut().map(|(_, t)| (Target::Cut(self.here()), t))
     }
 
     fn effects_of(&self, target: Target) -> &[EffectKey] {
         match target {
-            Target::Cut(i) => &self.edit.cuts[i].effects,
+            Target::Cut(i) => &self.edit.cut(i).expect("the playing cut").effects,
             Target::Overlay(i) => &self.edit.item(i).expect("the selected overlay").effects,
         }
     }
 
     fn effects_mut(&mut self, target: Target) -> &mut Vec<EffectKey> {
         match target {
-            Target::Cut(i) => &mut self.edit.cuts[i].effects,
+            Target::Cut(i) => &mut self.edit.cut_mut(i).expect("the playing cut").effects,
             Target::Overlay(i) => &mut self.edit.item_mut(i).expect("the selected overlay").effects,
         }
     }
@@ -252,7 +252,7 @@ impl App {
             EffectMsg::Lut(choice) => {
                 let Some((Target::Cut(i), _)) = target else { return };
                 self.edit.checkpoint();
-                let cut = &mut self.edit.cuts[i];
+                let Some(cut) = self.edit.cut_mut(i) else { return };
                 cut.lut = choice.name();
                 if let Err(e) = cut.resolve_lut() {
                     self.error = Some(format!("{e:#}"));
@@ -365,12 +365,16 @@ impl App {
             }
             EffectMsg::ToAll => {
                 let Some((_, t)) = self.playing_cut() else { return };
-                let grade = grade_at(&self.edit.cuts[self.current].effects, t);
+                let grade = grade_at(&self.edit.play[self.current].effects, t);
                 self.edit.checkpoint();
-                let current = self.current;
-                for (i, cut) in self.edit.cuts.iter_mut().enumerate() {
-                    if i != current {
-                        cut.effects = vec![EffectKey { t: cut.start, grade, ease: Ease::Smooth }];
+                // Every cut of both tracks but this one.
+                let here = self.here();
+                let tracks = [&mut self.edit.cuts, &mut self.edit.upper];
+                for (track, cuts) in tracks.into_iter().enumerate() {
+                    for (i, cut) in cuts.iter_mut().enumerate() {
+                        if (track, i) != here {
+                            cut.effects = vec![EffectKey { t: cut.start, grade, ease: Ease::Smooth }];
+                        }
                     }
                 }
             }
@@ -397,16 +401,21 @@ impl App {
                 self.follow = true;
                 self.selected = Some(cut);
                 self.selected_overlay = None;
-                self.goto(cut, t, false);
+                if let Some((j, t)) = self.edit.piece_of(cut, t) {
+                    self.goto(j, t, false);
+                }
             }
             EffectMsg::KeyMove(cut, key, t) => {
                 self.follow = true;
                 self.begin_drag();
                 let gap = 1.0 / self.fps();
-                let Some(c) = self.edit.cuts.get_mut(cut) else { return };
+                let Some(c) = self.edit.cut_mut(cut) else { return };
                 crate::view::retime(&mut c.effects, key, t, gap);
                 if let Some(t) = c.effects.get(key).map(|k| k.t) {
-                    self.scrub_to(cut, t);
+                    self.edit.reflow();
+                    if let Some((j, t)) = self.edit.piece_of(cut, t) {
+                        self.scrub_to(j, t);
+                    }
                 }
             }
         }
@@ -494,8 +503,8 @@ impl App {
 
     /// Cut `i`'s LUT, and its strength in `grade` (the effects at the
     /// playhead): the LUT acts before the effects, which act on what it gives.
-    fn lut_controls(&self, i: usize, grade: &Grade) -> Element<'_, Message> {
-        let cut = &self.edit.cuts[i];
+    fn lut_controls(&self, i: super::edit::CutRef, grade: &Grade) -> Element<'_, Message> {
+        let Some(cut) = self.edit.cut(i) else { return column![].into() };
         let mut choices = vec![LutChoice::None];
         choices.extend(self.luts.iter().map(|n| LutChoice::Named(n.clone())));
         let current = LutChoice::of(cut.lut.as_ref());
@@ -570,7 +579,7 @@ impl App {
             ));
         }
         let cut_name = match target {
-            Some((Target::Cut(i), _)) => format!("Cut {} · {}", i + 1, super::clip_name(&self.edit.cuts[i].input)),
+            Some((Target::Cut(i), _)) => format!("{} {} · {}", if i.0 == 0 { "Cut" } else { "Upper cut" }, i.1 + 1, self.edit.cut(i).map_or(String::new(), |c| super::clip_name(&c.input))),
             Some((Target::Overlay(i), _)) => match self.edit.item(i) {
                 Some(it) if it.text.is_some() => format!("Text · {}", it.name()),
                 Some(it) => format!("Overlay · {}", super::clip_name(&it.input)),

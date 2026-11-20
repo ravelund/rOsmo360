@@ -135,11 +135,18 @@ impl Player {
     /// it otherwise): the clips under `t`, each at the track's level there
     /// (with its volume points) times the clip's envelope.
     pub fn follow(&mut self, track: &project::Music, t: f64, video_end: f64, playing: bool) {
+        self.follow_with(track, t, video_end, playing, &|_, _| 0.0);
+    }
+
+    /// As `follow`, each clip `i` also `points(i, t)` dB at edit time `t`:
+    /// the main track's sound running on under the upper track, as music
+    /// clips, with its cuts' volume points.
+    pub fn follow_with(&mut self, track: &project::Music, t: f64, video_end: f64, playing: bool, points: &dyn Fn(usize, f64) -> f64) {
         if !playing {
             self.open.clear();
             return;
         }
-        let level = |i: usize, t: f64| gain(track.level_at(t)) * envelope(&track.clips[i], track.crossfades(i), t, video_end) as f32;
+        let level = |i: usize, t: f64| gain(track.level_at(t) + points(i, t)) * envelope(&track.clips[i], track.crossfades(i), t, video_end) as f32;
         let mut old = std::mem::take(&mut self.open);
         let now: Vec<usize> = (0..track.clips.len()).filter(|&i| t >= track.clips[i].at && t < track.clips[i].ends() && t < video_end).collect();
         for &i in &now {

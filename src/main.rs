@@ -959,8 +959,20 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
     if project.cuts.is_empty() {
         bail!("nothing to export yet: the project has music but no video cuts");
     }
-    let mut project = project.clone();
-    let (pipelines, of_cut) = cut_pipelines(&mut project, opts, out.draft, out.fps)?;
+    let whole = matches!(out.target, Target::One(_));
+    // The pictures: the whole edit as one sequence, the upper track over
+    // the main one; a file per cut takes each track's cuts as they are.
+    let flat = project.flatten();
+    let upper_cuts = project.upper().to_vec();
+    let pictures: Vec<project::Cut> =
+        if whole { flat.cuts.clone() } else { project.cuts.iter().cloned().chain(upper_cuts.iter().map(|c| project::Cut { track: 1, ..c.clone() })).collect() };
+    let (n_pictures, n_main) = (pictures.len(), project.cuts.len());
+    // Set up with the main track's cuts too, whose sound runs on under the
+    // upper track's.
+    let mut project = project::Project { cuts: pictures.into_iter().chain(project.cuts.iter().cloned()).collect(), ..project.clone() };
+    let (pipelines, mut of_cut) = cut_pipelines(&mut project, opts, out.draft, out.fps)?;
+    let main_cuts = project.cuts.split_off(n_pictures);
+    let of_main = of_cut.split_off(n_pictures);
     let project = &project;
     // The shader always draws both lenses, so `--only` needs the CPU.
     let mut gpu = if out.cpu || opts.only.is_some() {
@@ -987,7 +999,6 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
     if out.fps.is_none() && pipelines.iter().any(|p| (p.fps - fps).abs() > 0.01) {
         eprintln!("the clips' frame rates differ; exporting at {fps:.3} fps");
     }
-    let whole = matches!(out.target, Target::One(_));
     // Per cut: its clip's pipeline, start (on a frame) and frame count, and
     // the frames it shares with the cut before: its crossfade, in the whole
     // edit only (a file per cut is for another editor's own), never more
@@ -999,10 +1010,14 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
     // fps a 7 s cut is 209.79 frames, written as 210, and so is every
     // whole-second cut under 16 s.
     let frame = |t: f64| (t * fps).round() as usize;
-    let mut plan: Vec<(usize, f64, usize)> = Vec::with_capacity(project.cuts.len());
-    let mut overlap = vec![0usize; project.cuts.len()];
+    // Per cut its pipeline, start and frames; and the frames it shares with
+    // the cut before.
+    type Plan = (Vec<(usize, f64, usize)>, Vec<usize>);
+    let plan_of = |cuts: &[project::Cut], of_cut: &[usize]| -> Result<Plan> {
+    let mut plan: Vec<(usize, f64, usize)> = Vec::with_capacity(cuts.len());
+    let mut overlap = vec![0usize; cuts.len()];
     let mut at = 0.0; // where the cut before ends on the edit
-    for (n, (cut, &i)) in project.cuts.iter().zip(&of_cut).enumerate() {
+    for (n, (cut, &i)) in cuts.iter().zip(of_cut).enumerate() {
         let p = &pipelines[i];
         let from = (cut.start - handles).max(0.0);
         let end = (cut.end + handles).min(ffmpeg::duration(&cut.input)?);
@@ -1027,30 +1042,48 @@ fn export(project: &project::Project, opts: &StitchOpts, out: &ExportOpts, progr
         at = starts + len;
         plan.push((i, p.snap(from), (frame(at) - frame(starts)).max(overlap[n] + 1)));
     }
+    Ok((plan, overlap))
+    };
+    let (plan, overlap) = plan_of(&project.cuts, &of_cut)?;
+    // The main track's sound runs on under the upper track, as if it were
+    // alone: its own stretches, timed as its pictures would be.
+    let main_sound = if whole && !flat.upper.is_empty() { Some(plan_of(&main_cuts, &of_main)?) } else { None };
+    let placed: Vec<ffmpeg::Placed> = flat
+        .upper
+        .iter()
+        .map(|u| ffmpeg::Placed { input: &upper_cuts[u.cut].input, start: upper_cuts[u.cut].start, len: u.len, at: u.at, volume: &upper_cuts[u.cut].volume, fade_in: u.fade_in, fade_out: u.fade_out })
+        .collect();
     // Each file and the cuts it holds.
     let files: Vec<(PathBuf, std::ops::Range<usize>)> = match &out.target {
         Target::One(path) => vec![(path.clone(), 0..plan.len())],
         Target::Clips { dir, name, .. } => {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-            (0..plan.len()).map(|k| (dir.join(format!("{name} - {:03}.{}", k + 1, out.format.extension())), k..k + 1)).collect()
+            // The upper track's cuts after the main track's, named apart.
+            let file = |k: usize| if k < n_main { format!("{name} - {:03}", k + 1) } else { format!("{name} - V2 {:03}", k - n_main + 1) };
+            (0..plan.len()).map(|k| (dir.join(format!("{}.{}", file(k), out.format.extension())), k..k + 1)).collect()
         }
     };
     let total = plan.iter().map(|p| p.2).sum();
     let mut done = 0;
     let mut written = Vec::with_capacity(files.len());
     for (path, cuts) in files {
-        let sound: Vec<_> = cuts
-            .clone()
-            .zip(&plan[cuts.clone()])
-            .map(|(n, &(i, start, frames))| {
-                let crossfade = if n > cuts.start { overlap[n] as f64 / fps } else { 0.0 };
-                ffmpeg::Sound { input: &pipelines[i].input, start, duration: Some(frames as f64 / fps), volume: &project.cuts[n].volume, crossfade }
-            })
-            .collect();
+        fn stretches<'a>(cuts: std::ops::Range<usize>, plan: &[(usize, f64, usize)], overlap: &[usize], of: &'a [project::Cut], pipelines: &'a [Pipeline], fps: f64) -> Vec<ffmpeg::Sound<'a>> {
+            cuts.clone()
+                .zip(&plan[cuts.clone()])
+                .map(|(n, &(i, start, frames))| {
+                    let crossfade = if n > cuts.start { overlap[n] as f64 / fps } else { 0.0 };
+                    ffmpeg::Sound { input: &pipelines[i].input, start, duration: Some(frames as f64 / fps), volume: &of[n].volume, crossfade }
+                })
+                .collect()
+        }
+        let sound = match &main_sound {
+            Some((plan, overlap)) => stretches(0..plan.len(), plan, overlap, &main_cuts, &pipelines, fps),
+            None => stretches(cuts.clone(), &plan, &overlap, &project.cuts, &pipelines, fps),
+        };
         // The whole edit gets its mix; a file per cut is for another editor,
         // so its sound is left as recorded and the music goes beside it.
         let length: f64 = cuts.clone().map(|n| (plan[n].2 - if n > cuts.start { overlap[n] } else { 0 }) as f64 / fps).sum();
-        let mix = ffmpeg::Mix { sound_db: project.sound.volume, music: &project.music, length, fades: project.fades };
+        let mix = ffmpeg::Mix { sound_db: project.sound.volume, music: &project.music, length, fades: project.fades, over: &placed };
         let mix = matches!(out.target, Target::One(_)).then_some(&mix);
         let mut encoder = ffmpeg::Encoder::new(&path, out.size, fps, &sound, mix, out.format, out.format == ffmpeg::Format::Resolve && gpu.is_some())?;
         // Overlays over the whole edit only; a file per cut has none.
@@ -1290,7 +1323,7 @@ fn run() -> Result<()> {
                 // One clip is a project of one cut.
                 let reframe = framing.reframe()?.unwrap_or_else(|| Reframe::fixed(View::home(Projection::Perspective)));
                 let (start, end) = span(&input, start, duration, Some(&reframe))?;
-                project::Project { aspect: reframe.aspect, cuts: vec![project::Cut { input, start, end, keyframes: reframe.keyframes, stabilize: None, note: None, volume: Vec::new(), crossfade: 0.0, transition: Default::default(), effects: Vec::new(), lut: None, old_lut_strength: None, flat: false, lut_applied: None }], ..Default::default() }
+                project::Project { aspect: reframe.aspect, cuts: vec![project::Cut { input, start, end, keyframes: reframe.keyframes, ..Default::default() }], ..Default::default() }
             };
             let aspect = aspect.or(project.aspect).unwrap_or(view::Aspect(16, 9));
             let [w, h] = size.unwrap_or_else(|| aspect.size(resolution.short_side())).map(|v| v as usize);
@@ -1386,7 +1419,8 @@ fn preview_project(project: &project::Project, opts: &StitchOpts, every: Option<
     if project.cuts.is_empty() {
         bail!("the project has no cuts to preview");
     }
-    let mut project = project.clone();
+    // As the export shows it: the upper track's cuts over the main one's.
+    let mut project = project::Project { cuts: project.flatten().cuts, ..project.clone() };
     let (pipelines, of_cut) = cut_pipelines(&mut project, opts, proxy, None)?;
     let project = &project;
     let view::Aspect(w, h) = project.aspect.unwrap_or(view::Aspect(16, 9));

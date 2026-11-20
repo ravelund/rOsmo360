@@ -42,6 +42,24 @@ pub struct Project {
     /// Lanes of text, over the overlays.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text: Vec<crate::overlay::Lane>,
+    /// Video tracks over the main one (`cuts`), the first lowest: their
+    /// cuts sit at times on the edit and cover the main track while they
+    /// play. One for now (`flatten`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video: Vec<VideoTrack>,
+}
+
+/// A video track over the main one: cuts placed at edit times (`Cut::at`),
+/// gaps showing the main track through. Its cuts' `crossfade` and
+/// `transition` say how each comes in over what's beneath, `out_crossfade`
+/// and `out_transition` how it goes; two of its cuts overlapping crossfade
+/// into each other instead, by the later one's `transition`. Their sound is
+/// mixed over the main track's, which runs on beneath.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoTrack {
+    #[serde(default)]
+    pub cuts: Vec<Cut>,
 }
 
 /// The edit's fades from black at its start and to black at its end, in
@@ -272,7 +290,7 @@ pub fn gain(db: f64) -> f64 {
     if db <= OFF_DB { 0.0 } else { 10f64.powf(db / 20.0) }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cut {
     /// The clip; a relative path is relative to the project file.
@@ -317,6 +335,24 @@ pub struct Cut {
     /// (`Project::load`), never written.
     #[serde(default, rename = "lut_strength", skip_serializing)]
     pub old_lut_strength: Option<f64>,
+    /// On a video track over the main one: where it starts on the edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+    /// On a track over the main one: seconds it goes out over what's
+    /// beneath at its end, and how (`crossfade` and `transition` are how it
+    /// comes in).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub out_crossfade: f64,
+    #[serde(default, skip_serializing_if = "Transition::is_dissolve")]
+    pub out_transition: Transition,
+    /// Which track it plays on in a flattened edit (`flatten`): 0 the main
+    /// one. Not saved.
+    #[serde(skip)]
+    pub track: usize,
+    /// In a flattened edit, a piece's whole cut's out point, where a later
+    /// cut without keyframes reads the view it holds. Not saved.
+    #[serde(skip)]
+    pub source_end: Option<f64>,
     /// Its clip is an ordinary video (framed by cropping, not a 360 view):
     /// found when the clip is opened, not saved.
     #[serde(skip)]
@@ -382,6 +418,174 @@ pub fn settle_crossfades(cuts: &mut [Cut]) {
     }
 }
 
+/// The main track and the video track over it as one sequence, the way the
+/// export and the player play them: the main track's cuts in pieces around
+/// where the track above covers them, and that track's cuts between, each
+/// overlapping only the piece before it (its `crossfade`, through its
+/// `transition`), so the machinery for a single track's crossfades plays it.
+#[derive(Debug, Default)]
+pub struct Flat {
+    pub cuts: Vec<Cut>,
+    /// Each piece's cut: (track, index), track 0 the main one.
+    pub source: Vec<(usize, usize)>,
+    /// The upper track's cuts as they play, for the sound.
+    pub upper: Vec<Upper>,
+    /// Where the main track's sound runs on under the upper track: the
+    /// stretches of its cuts no piece plays.
+    pub under: Vec<Under>,
+}
+
+/// An upper-track cut as it plays: from `at` for `len` seconds on the edit,
+/// its sound faded in and out (equal power) over its transitions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Upper {
+    pub cut: usize,
+    pub at: f64,
+    pub len: f64,
+    pub fade_in: f64,
+    pub fade_out: f64,
+}
+
+/// A stretch of main-track cut `cut`'s sound: from `at` on the edit, `len`
+/// seconds of its clip from clip time `from`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Under {
+    pub cut: usize,
+    pub at: f64,
+    pub from: f64,
+    pub len: f64,
+}
+
+/// What's beneath an upper cut's transition must be one main-track cut, so
+/// that no more than two pictures are ever mixed: the transitions are
+/// shortened to stop short of the main track's cut changes and crossfades,
+/// and none where an upper cut touches another.
+pub fn flatten(main: &[Cut], upper: &[Cut]) -> Flat {
+    const E: f64 = 1e-9;
+    let offs = offsets(main);
+    let length = edit_length(main);
+    // The main track's cut changes: a crossfade's stretch, or a point.
+    let changes: Vec<(f64, f64)> = (1..main.len()).map(|i| (offs[i], offs[i] + main[i].crossfade)).collect();
+    let mut order: Vec<usize> = (0..upper.len()).filter(|&k| upper[k].at.unwrap_or(0.0) < length - E).collect();
+    order.sort_by(|&x, &y| upper[x].at.unwrap_or(0.0).total_cmp(&upper[y].at.unwrap_or(0.0)));
+    let span = |k: usize| {
+        let a = upper[k].at.unwrap_or(0.0).max(0.0);
+        (a, (a + upper[k].len()).min(length))
+    };
+    // Each upper cut: its span and transitions, as they can be.
+    let mut ups: Vec<(usize, f64, f64, f64, f64)> = Vec::new();
+    for (n, &k) in order.iter().enumerate() {
+        let (a, b) = span(k);
+        let near_before = n > 0 && span(order[n - 1]).1 > a - SOLO;
+        let near_after = order.get(n + 1).is_some_and(|&j| span(j).0 < b + SOLO);
+        let mut lin = if near_before { 0.0 } else { upper[k].crossfade.max(0.0) };
+        let mut lout = if near_after { 0.0 } else { upper[k].out_crossfade.max(0.0) };
+        for &(r0, r1) in &changes {
+            if r1 > a + E && r0 < a + lin - E {
+                lin = if r0 > a + E { lin.min(r0 - a) } else { 0.0 };
+            }
+            if r0 < b - E && r1 > b - lout + E {
+                lout = if r1 < b - E { lout.min(b - r1) } else { 0.0 };
+            }
+        }
+        let room = b - a - SOLO;
+        if lin + lout > room {
+            let k = (room / (lin + lout)).max(0.0);
+            (lin, lout) = (lin * k, lout * k);
+        }
+        ups.push((k, a, b, lin, lout));
+    }
+    // Where the upper track hides the main one.
+    let opaque: Vec<(f64, f64)> = ups.iter().map(|&(_, a, b, lin, lout)| (a + lin, b - lout)).collect();
+    // (start, end, piece, source)
+    let mut items: Vec<(f64, f64, Cut, (usize, usize))> = Vec::new();
+    for (i, cut) in main.iter().enumerate() {
+        let (s, e) = (offs[i], offs[i] + cut.len());
+        let mut from = s;
+        let mut visible = Vec::new();
+        for &(o0, o1) in &opaque {
+            if o1 <= from || o0 >= e {
+                continue;
+            }
+            if o0 > from {
+                visible.push((from, o0));
+            }
+            from = from.max(o1);
+        }
+        if from < e {
+            visible.push((from, e));
+        }
+        for (p, q) in visible.into_iter().filter(|(p, q)| q - p > 1e-6) {
+            let piece = Cut { start: cut.start + (p - s), end: cut.start + (q - s), track: 0, source_end: Some(cut.end), ..cut.clone() };
+            items.push((p, q, piece, (0, i)));
+        }
+    }
+    for &(k, a, b, ..) in &ups {
+        let piece = Cut { end: upper[k].start + (b - a), track: 1, source_end: Some(upper[k].end), ..upper[k].clone() };
+        items.push((a, b, piece, (1, k)));
+    }
+    items.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)));
+    // A piece left no moment of its own, or under another, goes: the one
+    // after it takes over (a cut on the upper track ending in the middle of
+    // a crossfade on the main one shows its later cut).
+    let overlap = |items: &[(f64, f64, Cut, (usize, usize))], j: usize| if j == 0 { 0.0 } else { (items[j - 1].1 - items[j].0).max(0.0) };
+    'settle: loop {
+        for j in 0..items.len() {
+            let swallowed = j > 0 && items[j].1 <= items[j - 1].1 + E;
+            let crowded = items.get(j + 1).is_some_and(|next| next.0 <= items[j].0 + overlap(&items, j) + E);
+            if swallowed || crowded {
+                items.remove(j);
+                continue 'settle;
+            }
+        }
+        break;
+    }
+    let mut flat = Flat::default();
+    for j in 0..items.len() {
+        let crossfade = overlap(&items, j);
+        let (_, _, mut piece, source) = items[j].clone();
+        piece.crossfade = crossfade;
+        piece.transition = match (source.0, j.checked_sub(1).map(|p| &items[p])) {
+            (0, Some((.., before, (1, _)))) => before.out_transition,
+            _ => piece.transition,
+        };
+        if crossfade == 0.0 {
+            piece.transition = Transition::default();
+        }
+        piece.out_crossfade = 0.0;
+        flat.cuts.push(piece);
+        flat.source.push(source);
+    }
+    for &(k, a, b, lin, lout) in &ups {
+        let Some(j) = flat.source.iter().position(|&s| s == (1, k)) else { continue };
+        // Over another upper cut, the sound crossfades through their overlap.
+        let after = flat.cuts.get(j + 1).filter(|_| flat.source[j + 1].0 == 1).map(|c| c.crossfade);
+        let fade_in = if j > 0 && flat.source[j - 1].0 == 1 { flat.cuts[j].crossfade } else { lin };
+        flat.upper.push(Upper { cut: k, at: a, len: b - a, fade_in, fade_out: after.unwrap_or(lout) });
+    }
+    // The main track's sound wherever its own pieces don't play it.
+    let starts = offsets(&flat.cuts);
+    for (i, cut) in main.iter().enumerate() {
+        let (s, e) = (offs[i], offs[i] + cut.len());
+        let mut from = s;
+        let mut gaps = Vec::new();
+        for (j, piece) in flat.cuts.iter().enumerate().filter(|(j, _)| flat.source[*j] == (0, i)) {
+            let (p, q) = (starts[j], starts[j] + piece.len());
+            if p > from {
+                gaps.push((from, p));
+            }
+            from = from.max(q);
+        }
+        if from < e {
+            gaps.push((from, e));
+        }
+        for (p, q) in gaps.into_iter().filter(|(p, q)| q - p > 1e-6) {
+            flat.under.push(Under { cut: i, at: p, from: cut.start + (p - s), len: q - p });
+        }
+    }
+    flat
+}
+
 impl Project {
     /// How far faded to black cut `n` is at clip time `t`, 0..1.
     pub fn black_at(&self, n: usize, t: f64) -> f64 {
@@ -397,7 +601,23 @@ impl Project {
             bail!("{} has no cuts", path.display());
         }
         let dir = path.parent().unwrap_or(Path::new(""));
-        for (n, cut) in project.cuts.iter_mut().enumerate() {
+        if project.video.len() > 1 {
+            bail!("{} has {} video tracks over the main one; this version plays one", path.display(), project.video.len());
+        }
+        for track in &mut project.video {
+            for (n, cut) in track.cuts.iter_mut().enumerate() {
+                match cut.at {
+                    Some(at) if at.is_finite() && at >= 0.0 => {}
+                    _ => bail!("cut {} on the upper video track needs a place on the edit (\"at\", 0 or later)", n + 1),
+                }
+                if !cut.out_crossfade.is_finite() {
+                    bail!("an out crossfade isn't a number");
+                }
+            }
+            track.cuts.sort_by(|a, b| a.at.unwrap_or(0.0).total_cmp(&b.at.unwrap_or(0.0)));
+        }
+        let video = project.video.iter_mut().flat_map(|t| &mut t.cuts);
+        for (n, cut) in project.cuts.iter_mut().chain(video).enumerate() {
             if cut.end <= cut.start {
                 bail!("cut {} ends ({} s) before it starts ({} s)", n + 1, cut.end, cut.start);
             }
@@ -442,18 +662,20 @@ impl Project {
             item.motion.sort_by(|a, b| a.t.total_cmp(&b.t));
             item.effects.sort_by(|a, b| a.t.total_cmp(&b.t));
         }
-        if project.cuts.iter().any(|c| !c.crossfade.is_finite()) {
+        if project.all_cuts().any(|c| !c.crossfade.is_finite()) {
             bail!("a crossfade isn't a number");
         }
         settle_crossfades(&mut project.cuts);
-        let keys = project.cuts.iter_mut().map(|c| &mut c.volume).chain([&mut project.music.keyframes]);
+        let video = project.video.iter_mut().flat_map(|t| &mut t.cuts);
+        let keys = project.cuts.iter_mut().chain(video).map(|c| &mut c.volume).chain([&mut project.music.keyframes]);
         for keys in keys {
             if keys.iter().any(|k| !k.t.is_finite() || !k.volume.is_finite()) {
                 bail!("a volume point isn't a number");
             }
             keys.sort_by(|a, b| a.t.total_cmp(&b.t));
         }
-        for cut in &mut project.cuts {
+        let video = project.video.iter_mut().flat_map(|t| &mut t.cuts);
+        for cut in project.cuts.iter_mut().chain(video) {
             if cut.effects.iter().any(|k| !k.t.is_finite() || k.grade.values().iter().any(|v| !v.is_finite())) {
                 bail!("an effect keyframe isn't a number");
             }
@@ -467,7 +689,8 @@ impl Project {
     pub fn save(&self, path: &Path) -> Result<()> {
         let dir = path.parent().unwrap_or(Path::new(""));
         let mut project = self.clone();
-        for cut in &mut project.cuts {
+        let video = project.video.iter_mut().flat_map(|t| &mut t.cuts);
+        for cut in project.cuts.iter_mut().chain(video) {
             if let Ok(rel) = cut.input.strip_prefix(dir) {
                 cut.input = rel.to_owned();
             }
@@ -495,9 +718,24 @@ impl Project {
         crate::replace_file(path, (serde_json::to_string_pretty(&project)? + "\n").as_bytes())
     }
 
-    /// Length of the edit in seconds.
+    /// Length of the edit in seconds: the main track's.
     pub fn duration(&self) -> f64 {
         edit_length(&self.cuts)
+    }
+
+    /// The upper video track's cuts, if it has any.
+    pub fn upper(&self) -> &[Cut] {
+        self.video.first().map_or(&[], |t| &t.cuts)
+    }
+
+    /// Every cut, the main track's first.
+    pub fn all_cuts(&self) -> impl Iterator<Item = &Cut> {
+        self.cuts.iter().chain(self.video.iter().flat_map(|t| &t.cuts))
+    }
+
+    /// The edit as one sequence (`flatten`).
+    pub fn flatten(&self) -> Flat {
+        flatten(&self.cuts, self.upper())
     }
 }
 
@@ -514,7 +752,10 @@ pub fn keyframed(cuts: &[Cut], n: usize, t: f64) -> Option<(&Keyframes, f64)> {
     if cuts[n].flat {
         return None;
     }
-    cuts[..n].iter().rev().find(|c| !c.flat && !c.keyframes.is_empty()).map(|c| (&c.keyframes, c.end))
+    // Within its own track: a cut over the main track holds nothing of it,
+    // nor passes anything on to it.
+    let track = cuts[n].track;
+    cuts[..n].iter().rev().find(|c| c.track == track && !c.flat && !c.keyframes.is_empty()).map(|c| (&c.keyframes, c.source_end.unwrap_or(c.end)))
 }
 
 /// The view of cut `n` at clip time `t` (see `keyframed`), or straight ahead
@@ -663,6 +904,71 @@ mod tests {
         m.clips[2].at = 70.0;
         let at = Music::reach(70.0, 40.0, |at| m.fits(2, at, len, false));
         assert!((at - 60.0).abs() < 1e-6, "{at}");
+    }
+
+    fn cut(name: &str, start: f64, end: f64) -> Cut {
+        Cut { input: name.into(), start, end, ..Default::default() }
+    }
+
+    fn over(name: &str, at: f64, start: f64, end: f64, fade_in: f64, fade_out: f64) -> Cut {
+        Cut { at: Some(at), crossfade: fade_in, out_crossfade: fade_out, ..cut(name, start, end) }
+    }
+
+    /// (source, edit start, clip in, clip out, crossfade) of each piece.
+    fn pieces(f: &Flat) -> Vec<((usize, usize), f64, f64, f64, f64)> {
+        let at = offsets(&f.cuts);
+        f.cuts.iter().zip(&f.source).zip(at).map(|((c, &s), at)| (s, at, c.start, c.end, c.crossfade)).collect()
+    }
+
+    #[test]
+    fn an_upper_cut_covers_the_main_track() {
+        // Without one the main track plays as it is.
+        let main = [cut("a", 0.0, 4.0), Cut { crossfade: 1.0, ..cut("b", 2.0, 6.0) }];
+        let f = flatten(&main, &[]);
+        assert_eq!(pieces(&f), [((0, 0), 0.0, 0.0, 4.0, 0.0), ((0, 1), 3.0, 2.0, 6.0, 1.0)]);
+        assert!(f.under.is_empty() && f.upper.is_empty());
+        // Over the middle of a cut: in over 1 s, out over 0.5 s, the main
+        // cut's sound running on beneath where it's hidden.
+        let main = [cut("a", 0.0, 10.0)];
+        let up = [Cut { out_transition: Transition { style: crate::transition::Style::DipBlack, ..Default::default() }, ..over("u", 3.0, 20.0, 24.0, 1.0, 0.5) }];
+        let f = flatten(&main, &up);
+        assert_eq!(pieces(&f), [((0, 0), 0.0, 0.0, 4.0, 0.0), ((1, 0), 3.0, 20.0, 24.0, 1.0), ((0, 0), 6.5, 6.5, 10.0, 0.5)]);
+        assert_eq!(f.cuts[2].transition, up[0].out_transition);
+        assert_eq!((f.cuts[1].track, f.cuts[2].track), (1, 0));
+        assert_eq!(f.under, [Under { cut: 0, at: 4.0, from: 4.0, len: 2.5 }]);
+        assert_eq!(f.upper, [Upper { cut: 0, at: 3.0, len: 4.0, fade_in: 1.0, fade_out: 0.5 }]);
+        assert!((edit_length(&f.cuts) - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn upper_transitions_keep_to_one_main_cut() {
+        // A main cut change 0.5 s into the transition in: shortened to it.
+        let main = [cut("a", 0.0, 5.0), cut("b", 0.0, 5.0)];
+        let f = flatten(&main, &[over("u", 4.5, 0.0, 2.0, 1.0, 1.0)]);
+        assert_eq!(pieces(&f), [((0, 0), 0.0, 0.0, 5.0, 0.0), ((1, 0), 4.5, 0.0, 2.0, 0.5), ((0, 1), 5.5, 0.5, 5.0, 1.0)]);
+        assert_eq!(f.under, [Under { cut: 1, at: 5.0, from: 0.0, len: 0.5 }]);
+        // Two upper cuts overlapping crossfade into each other, the main
+        // track hidden from the first's start to the second's end.
+        let f = flatten(&[cut("a", 0.0, 10.0)], &[over("u", 2.0, 0.0, 4.0, 0.0, 0.5), over("v", 5.0, 0.0, 3.0, 0.5, 0.0)]);
+        assert_eq!(pieces(&f), [((0, 0), 0.0, 0.0, 2.0, 0.0), ((1, 0), 2.0, 0.0, 4.0, 0.0), ((1, 1), 5.0, 0.0, 3.0, 1.0), ((0, 0), 8.0, 8.0, 10.0, 0.0)]);
+        assert_eq!(f.upper.iter().map(|u| (u.fade_in, u.fade_out)).collect::<Vec<_>>(), [(0.0, 1.0), (1.0, 0.0)]);
+        assert_eq!(f.under, [Under { cut: 0, at: 2.0, from: 2.0, len: 6.0 }]);
+        // Past the edit's end it's cut off there.
+        let f = flatten(&[cut("a", 0.0, 10.0)], &[over("u", 8.0, 0.0, 5.0, 0.0, 0.0), over("w", 11.0, 0.0, 1.0, 0.0, 0.0)]);
+        assert_eq!(pieces(&f), [((0, 0), 0.0, 0.0, 8.0, 0.0), ((1, 0), 8.0, 0.0, 2.0, 0.0)]);
+    }
+
+    #[test]
+    fn an_upper_cut_ending_in_a_main_crossfade_shows_its_later_cut() {
+        let main = [cut("a", 0.0, 6.0), Cut { crossfade: 2.0, ..cut("b", 0.0, 6.0) }];
+        let f = flatten(&main, &[over("u", 1.0, 0.0, 4.0, 0.0, 0.0)]);
+        assert_eq!(pieces(&f), [((0, 0), 0.0, 0.0, 1.0, 0.0), ((1, 0), 1.0, 0.0, 4.0, 0.0), ((0, 1), 5.0, 1.0, 6.0, 0.0)]);
+        assert!((edit_length(&f.cuts) - 10.0).abs() < 1e-9);
+        // Its held view comes from its own track only.
+        let mut pair = [Cut { keyframes: serde_json::from_str(r#"[{"t": 0, "yaw": 50}]"#).unwrap(), ..cut("a", 0.0, 6.0) }, Cut { track: 1, ..cut("u", 0.0, 4.0) }];
+        assert_eq!(keyframed(&pair, 1, 2.0), None);
+        pair[1].track = 0;
+        assert!(keyframed(&pair, 1, 2.0).is_some());
     }
 
     #[test]

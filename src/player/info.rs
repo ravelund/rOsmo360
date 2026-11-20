@@ -17,7 +17,7 @@ const WIDTH: f32 = 300.0;
 /// What on the timeline the panel is about.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Of {
-    Cut(usize),
+    Cut(super::edit::CutRef),
     Music(usize),
     Overlay(ItemRef),
 }
@@ -234,13 +234,16 @@ impl App {
         let span = |a: f64, b: f64| format!("{} – {}", clock(a), clock(b));
         let mut rows = Vec::new();
         match info.of {
-            Of::Cut(i) => {
-                let Some(cut) = self.edit.cuts.get(i).filter(|c| c.input == info.path) else { return rows };
-                let at = crate::project::offsets(&self.edit.cuts)[i];
-                rows.push(("Cut", format!("{} of {}", i + 1, self.edit.cuts.len())));
+            Of::Cut(r) => {
+                let Some(cut) = self.edit.cut(r).filter(|c| c.input == info.path) else { return rows };
+                let at = self.edit.start_of(r);
+                match r {
+                    (0, i) => rows.push(("Cut", format!("{} of {}", i + 1, self.edit.cuts.len()))),
+                    (_, k) => rows.push(("Upper cut", format!("{} of {}", k + 1, self.edit.upper.len()))),
+                }
                 rows.push(("On the edit", span(at, at + cut.end - cut.start)));
                 rows.push(("From the file", span(cut.start, cut.end)));
-                let uses = self.edit.cuts.iter().filter(|c| c.input == info.path).count();
+                let uses = self.edit.cuts.iter().chain(&self.edit.upper).filter(|c| c.input == info.path).count();
                 if uses > 1 {
                     rows.push(("Used", format!("in {uses} cuts")));
                 }

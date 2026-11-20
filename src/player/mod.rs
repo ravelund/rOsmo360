@@ -39,6 +39,7 @@ use iced::mouse;
 use iced::widget::{button, canvas, center, column, progress_bar, container, image, pick_list, responsive, row, shader, slider, space, stack, svg, text, toggler, tooltip};
 use iced::window;
 use iced::{Alignment, Element, Length, Point, Rectangle, Size, Subscription, Task, Theme};
+use edit::CutRef;
 use playback::Playback;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -168,7 +169,7 @@ pub fn run(inputs: Vec<PathBuf>, launch: Launch) -> Result<()> {
             let task = match inputs.iter().find(|p| is_project(p)) {
                 Some(project) => app.update(Message::ProjectPicked(Some(project.clone()))),
                 None => {
-                    app.queue.extend(inputs.iter().map(|p| (p.clone(), true)));
+                    app.queue.extend(inputs.iter().map(|p| (p.clone(), Add::Main)));
                     app.open_next()
                 }
             };
@@ -395,10 +396,10 @@ enum Message {
     /// Music volume point `i` dragged to this edit time and level.
     VolumeMove(usize, f64, f64),
     /// A sound point on cut `cut` at this clip time and level (dB).
-    SoundKeyAdd(usize, f64, f64),
-    SoundKeySelect(usize, usize),
+    SoundKeyAdd(CutRef, f64, f64),
+    SoundKeySelect(CutRef, usize),
     /// Cut `cut`'s sound point dragged to this clip time and level.
-    SoundKeyMove(usize, usize, f64, f64),
+    SoundKeyMove(CutRef, usize, f64, f64),
     /// The mix: the clips' sound and the music track, in dB.
     SoundLevel(f64),
     MusicLevel(f64),
@@ -440,22 +441,31 @@ enum Message {
     KeyEase(Ease),
     KeyFollow(Aiming),
     /// Jump to keyframe `.1` of cut `.0`.
-    KeyJump(usize, usize),
+    KeyJump(CutRef, usize),
     /// Drag keyframe `.1` of cut `.0` to clip time `.2`.
-    KeyMove(usize, usize, f64),
-    Select(usize),
+    KeyMove(CutRef, usize, f64),
+    Select(CutRef),
     /// Drag cut `.0`'s in (`.1` true) or out point to clip time `.2`.
-    Trim(usize, bool, f64),
+    Trim(CutRef, bool, f64),
+    /// Upper cut `.0` dragged towards edit time `.1`, with Shift (partly
+    /// over its neighbour) or not.
+    UpperMove(usize, f64, bool),
     /// Move cut `.0` to position `.1`.
     MoveCut(usize, usize),
     /// Split the cut at the playhead.
     Split,
-    /// Cut `i`'s crossfade from the cut before dragged to this many seconds.
-    Crossfade(usize, f64),
+    /// Cut `i`'s crossfade from the cut before (an upper cut's way in over
+    /// what's beneath) dragged to this many seconds.
+    Crossfade(CutRef, f64),
+    /// Upper cut `.0`'s way out over what's beneath, in seconds.
+    OutCrossfade(usize, f64),
     /// The Transitions panel and what it sets.
     Transition(transitions::TransitionMsg),
     /// From the Effects panel.
     Effect(effects::EffectMsg),
+    /// Pick clips for the upper video track, and those picked.
+    AddUpper,
+    PickedUpper(Vec<PathBuf>),
     /// Delete the selected cut, or the selected music clip.
     DeleteCut,
     Undo,
@@ -527,22 +537,28 @@ struct App {
     /// The music volume point selected, and the cut sound point: (cut,
     /// point).
     selected_volume: Option<usize>,
-    selected_sound: Option<(usize, usize)>,
+    selected_sound: Option<(CutRef, usize)>,
     music: music::Player,
+    /// The main track's sound running on under the upper track.
+    under: music::Player,
     /// Through a crossfade, the other cut of it alongside: its index and
     /// clip. Usually the next one, coming in over the playing cut; while
     /// paused with the incoming cut selected for editing, that one is the
     /// current cut and this is the one before (`follow_crossfade`).
     partner: Option<(usize, Clip)>,
     edit: edit::Edit,
-    /// The cut being played, and the one selected on the timeline.
+    /// The piece of the edit being played (`Edit::play`), and the cut
+    /// selected on the timeline.
     current: usize,
-    selected: Option<usize>,
+    selected: Option<CutRef>,
     /// Clips waiting to be loaded, in order, and whether each is added as a
     /// cut (opened) or only loaded for a project's cuts.
-    queue: std::collections::VecDeque<(PathBuf, bool)>,
+    queue: std::collections::VecDeque<(PathBuf, Add)>,
     /// Whether the clip loading now is added as a cut.
-    loading_adds: bool,
+    loading_adds: Add,
+    /// Where the next clip added to the upper track goes on the edit: the
+    /// playhead, then after the one before.
+    upper_at: f64,
     /// The next cut's playback, primed in the last `PREROLL` seconds of the
     /// one playing, with the cut it was made for: its clip and in point, so
     /// one made stale by an edit is never used.
@@ -601,7 +617,7 @@ struct App {
     /// The cut (index and clip) looked around in by hand since the view last
     /// followed keyframes: one without keyframes of its own keeps that view
     /// (`keep_hand_view`).
-    hand_cut: Option<(usize, PathBuf)>,
+    hand_cut: Option<(CutRef, PathBuf)>,
     /// Whether `look` belongs to ordinary videos.
     look_flat: bool,
     /// Show the keyframes' view rather than `look`. Playing, seeking and
@@ -616,7 +632,7 @@ struct App {
     /// The cut and clip time automatic keyframing is writing to, so one
     /// look-around there is one undo step; `None` once it's over (the mouse
     /// let go, or anything else done).
-    auto_key_at: Option<(usize, f64)>,
+    auto_key_at: Option<(CutRef, f64)>,
     /// The timeline lanes' scale as the divider has it now, and as last let
     /// go, which is what's saved: a drag would otherwise write the settings
     /// file at every step.
@@ -698,6 +714,7 @@ impl App {
             selected_music: None,
             selected_volume: None,
             selected_sound: None,
+            under: Default::default(),
             music: Default::default(),
             partner: None,
             edit: edit::Edit::default(),
@@ -708,7 +725,8 @@ impl App {
             timeline_zoom: 1.0,
             timeline_start: 0.0,
             queue: Default::default(),
-            loading_adds: true,
+            loading_adds: Add::Main,
+            upper_at: 0.0,
             loaded: 0,
             loading_part: Arc::default(),
             preroll: None,
@@ -815,6 +833,9 @@ impl App {
             self.dragging = false;
         }
         let task = self.handle(message);
+        if !quiet {
+            self.reflow();
+        }
         if looking {
             self.auto_key(before);
         }
@@ -839,22 +860,40 @@ impl App {
             // Only while the clock runs: waiting for its first frame it stands
             // still, and music started then took it as drift and restarted
             // over and over until the picture came.
-            Some(c) if self.current < self.edit.cuts.len() => (c.playback.running(), self.edit.edit_time(self.current, c.playback.now())),
+            Some(c) if self.current < self.edit.play.len() => (c.playback.running(), self.edit.edit_time(self.current, c.playback.now())),
             _ => (false, 0.0),
         };
         self.music.follow(&self.edit.music, t, self.edit.duration(), playing);
+        // The main track's sound where the upper track's cuts hide it: as
+        // music clips at the clips' level, with their cuts' volume points.
+        let under = crate::project::Music {
+            volume: self.edit.sound.volume,
+            clips: self.edit.under.iter().filter_map(|u| Some(crate::project::MusicClip { input: self.edit.cuts.get(u.cut)?.input.clone(), at: u.at, start: u.from, end: u.from + u.len, fade_in: 0.0, fade_out: 0.0 })).collect(),
+            keyframes: Vec::new(),
+        };
+        let cuts: Vec<usize> = self.edit.under.iter().filter(|u| u.cut < self.edit.cuts.len()).map(|u| u.cut).collect();
+        let points = |i: usize, t: f64| {
+            let clip = &under.clips[i];
+            crate::project::volume_at(&self.edit.cuts[cuts[i]].volume, clip.start + t - clip.at)
+        };
+        self.under.follow_with(&under, t, self.edit.duration(), playing, &points);
         self.meter.follow(playing);
         // The cut's own volume points move its level as it plays, and
-        // through a crossfade the two cuts trade places, equal power.
+        // through a crossfade the two cuts trade places, equal power; but
+        // between the tracks the main one's sound runs on at its level, the
+        // upper cut's alone fading in or out over it, as the export mixes.
         let shares = self.crossfade_shares();
         let quarter = |x: f64| (x.clamp(0.0, 1.0) * std::f64::consts::FRAC_PI_2).sin() as f32;
-        let v = self.clip_volume() * shares.map_or(1.0, |(mine, _)| quarter(mine));
+        let partner_track = self.partner.as_ref().and_then(|(j, _)| self.edit.source.get(*j)).map(|s| s.0);
+        let across = partner_track.is_some_and(|t| t != self.here().0);
+        let share = |mine: f64, track: usize| if across && track == 0 { 1.0 } else { quarter(mine) };
+        let v = self.clip_volume() * shares.map_or(1.0, |(mine, _)| share(mine, self.here().0));
         if let Some(c) = &mut self.clip {
             c.playback.set_volume(v);
         }
         if let (Some((_, theirs)), Some((i, inc))) = (shares, &self.partner) {
-            let points = self.edit.cuts.get(*i).map_or(0.0, |c| crate::project::volume_at(&c.volume, inc.playback.now()));
-            let v = music::gain(self.edit.sound.volume + points) * quarter(theirs);
+            let points = self.edit.play.get(*i).map_or(0.0, |c| crate::project::volume_at(&c.volume, inc.playback.now()));
+            let v = music::gain(self.edit.sound.volume + points) * share(theirs, partner_track.unwrap_or(0));
             if let Some((_, inc)) = &mut self.partner {
                 inc.playback.set_volume(v);
             }
@@ -883,13 +922,13 @@ impl App {
                 && t >= from
                 && t < cut.end
             {
-                let next = &self.edit.cuts[self.current + 1];
+                let next = &self.edit.play[self.current + 1];
                 return Some((self.current + 1, next.input.clone(), next.start + (t - from), playing));
             }
             // The incoming cut paused in it (taken over to edit): the one
             // before alongside, shown when it's not selected.
             if !playing && self.current > 0 && t < cut.start + cut.crossfade {
-                let before = &self.edit.cuts[self.current - 1];
+                let before = &self.edit.play[self.current - 1];
                 return Some((self.current - 1, before.input.clone(), before.end - cut.crossfade + (t - cut.start), false));
             }
             None
@@ -941,7 +980,7 @@ impl App {
                 }
             }
             // Played into: the cut readied ahead, if it was.
-            _ if playing && t - self.edit.cuts[i].start < 0.25 && self.preroll.as_ref().is_some_and(|(j, inp, at, _)| (*j, inp, *at) == (i, &input, self.edit.cuts[i].start)) => {
+            _ if playing && t - self.edit.play[i].start < 0.25 && self.preroll.as_ref().is_some_and(|(j, inp, at, _)| (*j, inp, *at) == (i, &input, self.edit.play[i].start)) => {
                 let (_, _, _, mut primed) = self.preroll.take().unwrap();
                 primed.go();
                 self.partner = Some((i, Clip { playback: primed, shown: None }));
@@ -950,7 +989,7 @@ impl App {
                 let Some(media) = self.library.iter().find(|m| m.input == input) else { return };
                 let mut media = media.clone();
                 media.osv_size = self.opts.osv_size;
-                media.stab.set_mode(self.edit.cuts[i].stabilize.unwrap_or(self.opts.stabilize));
+                media.stab.set_mode(self.edit.play[i].stabilize.unwrap_or(self.opts.stabilize));
                 // Playing, primed ahead to start as the edit gets there, as
                 // a resync is.
                 let playback = if playing {
@@ -980,7 +1019,7 @@ impl App {
     /// The clips' sound in the mix: its level and the playing cut's volume
     /// points where it is (the listening volume is `audio::set_listening`'s).
     fn clip_volume(&self) -> f32 {
-        let points = match (&self.clip, self.edit.cuts.get(self.current)) {
+        let points = match (&self.clip, self.edit.play.get(self.current)) {
             (Some(c), Some(cut)) => crate::project::volume_at(&cut.volume, c.playback.now()),
             _ => 0.0,
         };
@@ -1012,14 +1051,15 @@ impl App {
     /// already, else once it has loaded.
     fn open_next(&mut self) -> Task<Message> {
         // A project's first cut plays once its clip is in, while the rest load.
-        if self.clip.is_none() && self.edit.cuts.first().is_some_and(|c| self.library.iter().any(|m| m.input == c.input)) {
-            let start = self.edit.cuts[0].start;
+        if self.clip.is_none() && self.edit.play.first().is_some_and(|c| self.library.iter().any(|m| m.input == c.input)) {
+            let start = self.edit.play[0].start;
             self.follow = true;
             self.goto(0, start, false);
         }
         while let Some((path, add)) = self.queue.pop_front() {
             match self.library.iter().find(|m| m.input == path).map(|m| m.duration) {
-                Some(duration) if add => self.add_cut(path, duration),
+                Some(duration) if add == Add::Main => self.add_cut(path, duration),
+                Some(duration) if add == Add::Upper => self.add_upper_cut(path, duration),
                 Some(_) => {}
                 None => {
                     self.loading_adds = add;
@@ -1054,13 +1094,21 @@ impl App {
                 cut.keyframes.set(cut.start, look, 0.0, &|_, _| None);
             }
         };
-        if let Some(cut) = cuts.iter_mut().find(|c| !c.flat) {
-            hold(cut, look_360);
+        // Each track frames its own (`project::keyframed`), so the upper
+        // track's first 360 cut gets it too.
+        let mut upper = self.edit.upper.clone();
+        for track in [&mut cuts, &mut upper] {
+            if let Some(cut) = track.iter_mut().find(|c| !c.flat) {
+                hold(cut, look_360);
+            }
+            for cut in track.iter_mut().filter(|c| c.flat) {
+                hold(cut, look_flat);
+            }
         }
-        for cut in cuts.iter_mut().filter(|c| c.flat) {
-            hold(cut, look_flat);
-        }
-        Project { aspect, cuts, sound: self.edit.sound, music, fades: self.edit.fades, overlays: self.edit.overlays.clone(), text: self.edit.texts.clone() }
+        // In the order they play, as a project file lists them.
+        upper.sort_by(|a, b| a.at.unwrap_or(0.0).total_cmp(&b.at.unwrap_or(0.0)));
+        let video = if upper.is_empty() { Vec::new() } else { vec![crate::project::VideoTrack { cuts: upper }] };
+        Project { aspect, cuts, sound: self.edit.sound, music, fades: self.edit.fades, overlays: self.edit.overlays.clone(), text: self.edit.texts.clone(), video }
     }
 
     /// Renders the edit to `path` on its own thread with the export the
@@ -1126,7 +1174,7 @@ impl App {
     fn start_track(&mut self, colour: crate::track::Colour, hex: String, dir: [f64; 3]) -> Task<Message> {
         use iced::futures::{SinkExt, StreamExt};
         let Some((cut, t)) = self.playing_cut() else { return Task::none() };
-        let (input, end, i) = (cut.input.clone(), cut.end, self.current);
+        let (input, end, i) = (cut.input.clone(), cut.end, self.here());
         let folder = self.project.as_deref().unwrap_or(&input).parent().unwrap_or(Path::new("")).to_owned();
         let stem = input.file_stem().map_or_else(|| "clip".to_owned(), |s| s.to_string_lossy().into_owned());
         let path = folder.join(format!("{stem}-colour-{t:.1}s.csv"));
@@ -1173,13 +1221,14 @@ impl App {
         // where it was if that still fits. By its old place alone the
         // keyframe went to whichever cut had taken it, of any clip.
         let holds = |c: &Cut| c.input == done.input && done.t >= c.start && done.t <= c.end;
-        match self.edit.cuts.get(done.cut).filter(|c| holds(c)).map(|_| done.cut).or_else(|| self.edit.cuts.iter().position(holds)) {
+        let anywhere = || (0..2).flat_map(|track| (0..self.edit.cuts.len().max(self.edit.upper.len())).map(move |i| (track, i))).find(|&r| self.edit.cut(r).is_some_and(holds));
+        match self.edit.cut(done.cut).filter(|c| holds(c)).map(|_| done.cut).or_else(anywhere) {
             Some(i) => done.cut = i,
             None => return,
         }
         self.followed.borrow_mut().remove(&done.path);
         let follow = Follow::Track(done.path);
-        let here = done.cut == self.current;
+        let here = done.cut == self.here();
         let mut aims = if here { self.aims(done.t) } else { Vec::new() };
         let subject = if here { self.aim(&follow, done.t) } else { None };
         aims.push((follow.clone(), subject));
@@ -1190,7 +1239,8 @@ impl App {
         let aim = |f: &Follow, _| aims.iter().find(|a| &a.0 == f).and_then(|a| a.1);
         let tolerance = self.tolerance();
         self.edit.checkpoint();
-        let keyframes = &mut self.edit.cuts[done.cut].keyframes;
+        let Some(cut) = self.edit.cut_mut(done.cut) else { return };
+        let keyframes = &mut cut.keyframes;
         let k = keyframes.set(done.t, view, tolerance, &aim);
         keyframes.set_follow(k, Some(follow), &aim);
         self.follow = true;
@@ -1430,12 +1480,7 @@ impl App {
                     async move {
                         let mut dialog = rfd::AsyncFileDialog::new()
                             .set_title("Add clips")
-                            .add_filter(
-                                "Videos and pictures",
-                                &[
-                                    "OSV", "osv", "mp4", "MP4", "mov", "MOV", "mkv", "MKV", "m4v", "M4V", "avi", "AVI", "webm", "WEBM", "mts", "MTS", "jpg", "JPG", "jpeg", "JPEG", "png", "PNG", "webp", "WEBP", "bmp", "BMP", "tif", "TIF", "tiff", "TIFF",
-                                ],
-                            )
+                            .add_filter("Videos and pictures", CLIP_TYPES)
                             .add_filter("Osmo 360 video", &["OSV", "osv"]);
                         if let Some(dir) = dir {
                             dialog = dialog.set_directory(dir);
@@ -1449,7 +1494,30 @@ impl App {
                 if !paths.is_empty() {
                     self.error = None;
                 }
-                self.queue.extend(paths.into_iter().map(|p| (p, true)));
+                self.queue.extend(paths.into_iter().map(|p| (p, Add::Main)));
+                if self.loading.is_none() {
+                    return self.open_next();
+                }
+            }
+            Message::AddUpper => {
+                let dir = self.clip.as_ref().and_then(|c| c.playback.media.input.parent().map(Path::to_owned));
+                return Task::perform(
+                    async move {
+                        let mut dialog = rfd::AsyncFileDialog::new().set_title("Add clips to the upper video track").add_filter("Videos and pictures", CLIP_TYPES).add_filter("Osmo 360 video", &["OSV", "osv"]);
+                        if let Some(dir) = dir {
+                            dialog = dialog.set_directory(dir);
+                        }
+                        dialog.pick_files().await.unwrap_or_default().iter().map(|f| f.path().to_owned()).collect()
+                    },
+                    Message::PickedUpper,
+                );
+            }
+            Message::PickedUpper(paths) => {
+                if !paths.is_empty() {
+                    self.error = None;
+                    self.upper_at = self.position();
+                }
+                self.queue.extend(paths.into_iter().map(|p| (p, Add::Upper)));
                 if self.loading.is_none() {
                     return self.open_next();
                 }
@@ -1467,8 +1535,10 @@ impl App {
                         self.thumbs.entry(input.clone()).or_default();
                         self.library.push(media);
                         self.mark_flat();
-                        if self.loading_adds {
-                            self.add_cut(input, duration);
+                        match self.loading_adds {
+                            Add::Main => self.add_cut(input, duration),
+                            Add::Upper => self.add_upper_cut(input, duration),
+                            Add::Load => {}
                         }
                         return Task::batch([self.open_next(), thumbs.unwrap_or_else(Task::none)]);
                     }
@@ -1482,7 +1552,7 @@ impl App {
                 // Back to the start screen with an empty edit. Loaded clips
                 // stay in the library, so adding them again is instant; one
                 // still loading finishes there without becoming a cut.
-                self.edit.replace(Vec::new(), Default::default(), Default::default(), Default::default(), Vec::new(), Vec::new());
+                self.edit.replace(Vec::new(), Vec::new(), Default::default(), Default::default(), Default::default(), Vec::new(), Vec::new());
                 self.hand_cut = None;
                 self.info = None;
                 self.selected_music = None;
@@ -1496,7 +1566,7 @@ impl App {
                 self.current = 0;
                 self.selected = None;
                 self.queue.clear();
-                self.loading_adds = false;
+                self.loading_adds = Add::Load;
                 self.error = None;
                 self.save_status = None;
                 self.timeline_zoom = 1.0;
@@ -1562,11 +1632,14 @@ impl App {
                 // Clips still loading or waiting to be added belonged to the
                 // edit this one replaces; they'd become cuts of this project.
                 self.queue.clear();
-                self.loading_adds = false;
+                self.loading_adds = Add::Load;
                 // Cuts of clips that are gone can't play; say so and leave them out.
-                let (mut cuts, missing): (Vec<_>, Vec<_>) = project.cuts.into_iter().partition(|c| c.input.exists());
+                let upper = project.upper().to_vec();
+                let (mut cuts, mut missing): (Vec<_>, Vec<_>) = project.cuts.into_iter().partition(|c| c.input.exists());
+                let (mut upper, gone_upper): (Vec<_>, Vec<_>) = upper.into_iter().partition(|c| c.input.exists());
+                missing.extend(gone_upper);
                 // Each cut gets a mode of its own, so changing one leaves the rest.
-                for c in &mut cuts {
+                for c in cuts.iter_mut().chain(&mut upper) {
                     c.stabilize.get_or_insert(self.opts.stabilize);
                 }
                 self.error = (!missing.is_empty()).then(|| {
@@ -1599,9 +1672,9 @@ impl App {
                     self.error = Some(format!("{said}Left out missing overlays: {}", lost.join(", ")));
                 }
                 let waves: Vec<_> = music.clips.iter().map(|c| self.load_waveform(&c.input)).collect();
-                self.queue.extend(cuts.iter().map(|c| (c.input.clone(), false)));
+                self.queue.extend(cuts.iter().chain(&upper).map(|c| (c.input.clone(), Add::Load)));
                 let complete = missing.is_empty() && gone.is_empty() && lost.is_empty();
-                self.edit.replace(cuts, music, project.sound, project.fades, overlays, texts);
+                self.edit.replace(cuts, upper, music, project.sound, project.fades, overlays, texts);
                 self.hand_cut = None;
                 self.info = None;
                 self.mark_flat();
@@ -1646,7 +1719,7 @@ impl App {
             Message::ExportFps(rate) => self.export_fps = rate.0,
             Message::Info(of) => {
                 let path = match of {
-                    info::Of::Cut(i) => self.edit.cuts.get(i).map(|c| c.input.clone()),
+                    info::Of::Cut(r) => self.edit.cut(r).map(|c| c.input.clone()),
                     info::Of::Music(i) => self.edit.music.clips.get(i).map(|m| m.input.clone()),
                     info::Of::Overlay(r) => self.edit.item(r).filter(|it| it.text.is_none()).map(|it| it.input.clone()),
                 };
@@ -1893,7 +1966,7 @@ impl App {
                 });
                 if !playing && self.position() >= self.edit.duration() - 1.5 / self.fps() {
                     // From the end of the edit, play again from the start.
-                    let start = self.edit.cuts.first().map_or(0.0, |c| c.start);
+                    let start = self.edit.play.first().map_or(0.0, |c| c.start);
                     self.goto(0, start, true);
                 } else if let Some((i, t)) = onward {
                     self.goto(i, t, true);
@@ -1904,9 +1977,11 @@ impl App {
             Message::Scrub(t) => {
                 self.follow = true;
                 // In an overlap, the selected cut's time, if it's one of the two.
-                let selected = self.selected.filter(|&i| i < self.edit.cuts.len()).and_then(|i| {
-                    let (from, c) = (self.edit.offset(i), &self.edit.cuts[i]);
-                    (t >= from && t < from + c.len()).then(|| (i, c.start + t - from))
+                let selected = self.selected.and_then(|r| {
+                    (0..self.edit.play.len()).filter(|&j| self.edit.source[j] == r).find_map(|j| {
+                        let (from, c) = (self.edit.offset(j), &self.edit.play[j]);
+                        (t >= from && t < from + c.len()).then(|| (j, c.start + t - from))
+                    })
                 });
                 if let Some((i, t)) = selected.or_else(|| self.edit.locate(t)) {
                     self.scrub_to(i, t);
@@ -1922,7 +1997,7 @@ impl App {
             Message::Select(i) => {
                 // The other cut of a crossfade selected while paused: it
                 // takes the overlap over, to be framed there.
-                if self.partner.as_ref().is_some_and(|(j, _)| *j == i) && self.clip.as_ref().is_some_and(|c| !c.playback.playing) {
+                if self.partner.as_ref().is_some_and(|(j, _)| self.edit.source.get(*j) == Some(&i)) && self.clip.as_ref().is_some_and(|c| !c.playback.playing) {
                     self.swap_partner();
                 }
                 self.selected = Some(i);
@@ -2099,20 +2174,20 @@ impl App {
             }
             Message::VolumeSelect(i) => self.select_volume(i),
             Message::SoundKeyAdd(cut, t, db) => {
-                let Some(c) = self.edit.cuts.get(cut) else { return Task::none() };
+                let Some(c) = self.edit.cut(cut) else { return Task::none() };
                 let t = t.clamp(c.start, c.end);
                 self.begin_drag();
-                let keys = &mut self.edit.cuts[cut].volume;
+                let keys = &mut self.edit.cut_mut(cut).unwrap().volume;
                 let i = keys.partition_point(|k| k.t <= t);
                 keys.insert(i, crate::project::VolumeKey { t, volume: db });
                 self.select_sound(cut, i);
             }
             Message::SoundKeySelect(cut, i) => self.select_sound(cut, i),
             Message::SoundKeyMove(cut, i, t, db) => {
-                let Some(c) = self.edit.cuts.get(cut) else { return Task::none() };
+                let Some(c) = self.edit.cut(cut) else { return Task::none() };
                 let (start, end) = (c.start, c.end);
                 self.begin_drag();
-                let keys = &mut self.edit.cuts[cut].volume;
+                let keys = &mut self.edit.cut_mut(cut).unwrap().volume;
                 // Within the cut and between its neighbours.
                 let lo = i.checked_sub(1).map_or(start, |j| keys[j].t + 0.01).max(start);
                 let hi = keys.get(i + 1).map_or(end, |k| k.t - 0.01).min(end);
@@ -2183,17 +2258,30 @@ impl App {
                 self.edit.music.volume = db;
             }
             Message::LevelDone => self.dragging = false,
-            Message::Trim(i, start, t) => {
-                let Some(clip_len) = self.edit.cuts.get(i).and_then(|c| self.library.iter().find(|m| m.input == c.input)).map(|m| m.duration) else {
+            Message::Trim(r, start, t) => {
+                let Some(clip_len) = self.edit.cut(r).and_then(|c| self.library.iter().find(|m| m.input == c.input)).map(|m| m.duration) else {
                     return Task::none();
                 };
                 self.begin_drag();
-                self.edit.trim(i, start, t, clip_len);
-                let c = &self.edit.cuts[i];
+                match r {
+                    (0, i) => self.edit.trim(i, start, t, clip_len),
+                    (_, k) => self.edit.trim_upper(k, start, t, clip_len),
+                }
+                let c = self.edit.cut(r).unwrap();
                 // Show the frame at the edge being trimmed.
                 let t = if start { c.start } else { c.end - 1.0 / self.fps() };
                 self.follow = true;
-                self.scrub_to(i, t);
+                if let Some((j, t)) = self.edit.piece_of(r, t) {
+                    self.scrub_to(j, t);
+                }
+            }
+            Message::UpperMove(k, to, overlap) => {
+                if k < self.edit.upper.len() {
+                    let at = self.position();
+                    self.begin_drag();
+                    self.edit.move_upper(k, to, overlap);
+                    self.relocate(at);
+                }
             }
             Message::MoveCut(from, to) => {
                 if to != from && to != from + 1 {
@@ -2207,14 +2295,30 @@ impl App {
                         let j = if i > from { i - 1 } else { i };
                         if j >= landed { j + 1 } else { j }
                     };
+                    let (here, t) = (self.here(), self.playing_cut().map_or(0.0, |(_, t)| t));
                     self.edit.move_cut(from, to);
-                    self.current = at(self.current);
-                    self.selected = Some(at(from));
+                    // The same cut plays on, wherever it now is.
+                    let here = if here.0 == 0 { (0, at(here.1)) } else { here };
+                    if let Some((j, _)) = self.edit.piece_of(here, t) {
+                        self.current = j;
+                    }
+                    self.selected = Some((0, at(from)));
                 }
             }
-            Message::Crossfade(i, seconds) => {
+            Message::Crossfade(r, seconds) => {
+                let at = self.position();
                 self.begin_drag();
-                self.edit.set_crossfade(i, seconds);
+                match r {
+                    (0, i) => self.edit.set_crossfade(i, seconds),
+                    (_, k) => self.edit.set_upper_crossfade(k, false, seconds),
+                }
+                self.relocate(at);
+            }
+            Message::OutCrossfade(k, seconds) => {
+                let at = self.position();
+                self.begin_drag();
+                self.edit.set_upper_crossfade(k, true, seconds);
+                self.relocate(at);
             }
             Message::Transition(msg) => self.transition_message(msg),
             Message::Split if self.selected_music.is_some() => {
@@ -2232,13 +2336,20 @@ impl App {
             }
             Message::Split => {
                 let Some((_, t)) = self.playing_cut() else { return Task::none() };
-                let i = self.current;
-                if self.edit.can_split(i, t) {
+                let (track, i) = self.here();
+                let can = if track == 0 { self.edit.can_split(i, t) } else { self.edit.upper.get(i).is_some_and(|c| t >= c.start + edit::MIN_CUT && t <= c.end - edit::MIN_CUT) };
+                if can {
                     self.edit.checkpoint();
-                    self.edit.split(i, t);
+                    if track == 0 {
+                        self.edit.split(i, t);
+                    } else {
+                        self.edit.split_upper(i, t);
+                    }
                     // The playhead is now at the start of the second half.
-                    self.current = i + 1;
-                    self.selected = Some(i + 1);
+                    if let Some((j, _)) = self.edit.piece_of((track, i + 1), t) {
+                        self.current = j;
+                    }
+                    self.selected = Some((track, i + 1));
                     // Points are named by their cut's place, which moved.
                     self.selected_sound = None;
                 }
@@ -2252,9 +2363,9 @@ impl App {
             }
             Message::DeleteCut if self.selected_sound.is_some() => {
                 let (cut, i) = self.selected_sound.take().unwrap();
-                if self.edit.cuts.get(cut).is_some_and(|c| i < c.volume.len()) {
+                if self.edit.cut(cut).is_some_and(|c| i < c.volume.len()) {
                     self.edit.checkpoint();
-                    self.edit.cuts[cut].volume.remove(i);
+                    self.edit.cut_mut(cut).unwrap().volume.remove(i);
                 }
             }
             Message::DeleteCut if self.selected_volume.is_some() => {
@@ -2274,13 +2385,25 @@ impl App {
                 }
             }
             Message::DeleteCut => {
-                let Some(i) = self.selected.or(self.clip.as_ref().map(|_| self.current)) else { return Task::none() };
-                if i >= self.edit.cuts.len() {
+                let Some(r) = self.selected.or(self.clip.as_ref().map(|_| self.here())) else { return Task::none() };
+                if self.edit.cut(r).is_none() {
                     return Task::none();
                 }
                 self.edit.checkpoint();
-                self.edit.remove(i);
-                self.after_edit(self.edit.offset(i.min(self.edit.cuts.len())));
+                let now = self.position();
+                let at = match r {
+                    (0, i) => {
+                        self.edit.remove(i);
+                        self.edit.start_of((0, i.min(self.edit.cuts.len())))
+                    }
+                    (_, k) => {
+                        self.edit.upper.remove(k);
+                        self.edit.reflow();
+                        self.selected = None;
+                        now
+                    }
+                };
+                self.after_edit(at);
             }
             Message::Undo | Message::Redo => {
                 let at = self.position();
@@ -2299,7 +2422,8 @@ impl App {
             Message::KeyDelete => {
                 if let Some(k) = self.current_key() {
                     self.edit.checkpoint();
-                    self.edit.cuts[self.current].keyframes.remove(k);
+                    let here = self.here();
+                    self.edit.cut_mut(here).unwrap().keyframes.remove(k);
                 }
             }
             Message::Thumb(input, t, handle) => {
@@ -2309,17 +2433,18 @@ impl App {
             }
             Message::KeyEase(ease) => {
                 if let Some(k) = self.current_key()
-                    && self.edit.cuts[self.current].keyframes[k].ease != ease
+                    && self.edit.play[self.current].keyframes[k].ease != ease
                 {
                     self.edit.checkpoint();
-                    self.edit.cuts[self.current].keyframes.set_ease(k, ease);
+                    let here = self.here();
+                    self.edit.cut_mut(here).unwrap().keyframes.set_ease(k, ease);
                     self.follow = true;
                 }
             }
             Message::KeyFollow(_) | Message::Stab(_) | Message::Projection(_) if self.on_flat() => {}
             Message::KeyFollow(aiming) => {
                 let (Some(k), Some((_, t))) = (self.current_key(), self.playing_cut()) else { return Task::none() };
-                if Aiming::of(&self.edit.cuts[self.current].keyframes[k].follow) == aiming {
+                if Aiming::of(&self.edit.play[self.current].keyframes[k].follow) == aiming {
                     return Task::none();
                 }
                 let follow = match aiming {
@@ -2331,26 +2456,32 @@ impl App {
                 };
                 let aims = self.aims(t);
                 self.edit.checkpoint();
-                self.edit.cuts[self.current].keyframes.set_follow(k, follow, &|f, _| aims.iter().find(|a| &a.0 == f).and_then(|a| a.1));
+                let here = self.here();
+                self.edit.cut_mut(here).unwrap().keyframes.set_follow(k, follow, &|f, _| aims.iter().find(|a| &a.0 == f).and_then(|a| a.1));
                 self.follow = true;
             }
             Message::KeyJump(i, k) => {
                 self.follow = true;
                 self.selected = Some(i);
-                if let Some(t) = self.edit.cuts.get(i).and_then(|c| c.keyframes.get(k)).map(|k| k.t) {
+                if let Some(t) = self.edit.cut(i).and_then(|c| c.keyframes.get(k)).map(|k| k.t)
+                    && let Some((j, t)) = self.edit.piece_of(i, t)
+                {
                     let playing = self.clip.as_ref().is_some_and(|c| c.playback.playing);
-                    self.goto(i, t, playing);
+                    self.goto(j, t, playing);
                 }
             }
             Message::KeyMove(i, k, t) => {
                 self.follow = true;
                 self.begin_drag();
                 let gap = 1.0 / self.fps();
-                let Some(cut) = self.edit.cuts.get_mut(i) else { return Task::none() };
+                let Some(cut) = self.edit.cut_mut(i) else { return Task::none() };
                 cut.keyframes.retime(k, t, gap);
                 // Gone, if it was deleted or undone while being dragged.
                 let Some(t) = cut.keyframes.get(k).map(|k| k.t) else { return Task::none() };
-                self.scrub_to(i, t);
+                self.edit.reflow();
+                if let Some((j, t)) = self.edit.piece_of(i, t) {
+                    self.scrub_to(j, t);
+                }
             }
             Message::Look { yaw, pitch, roll } => {
                 let look = self.free_look();
@@ -2373,9 +2504,10 @@ impl App {
             Message::Stab(mode) => {
                 // The playing cut's, and the one new cuts get.
                 self.opts.stabilize = mode;
-                if self.edit.cuts.get(self.current).is_some_and(|c| c.stabilize != Some(mode)) {
+                let here = self.here();
+                if self.edit.cut(here).is_some_and(|c| c.stabilize != Some(mode)) {
                     self.edit.checkpoint();
-                    self.edit.cuts[self.current].stabilize = Some(mode);
+                    self.edit.cut_mut(here).unwrap().stabilize = Some(mode);
                 }
                 self.with_playback(|p| p.media.stab.set_mode(mode));
             }
@@ -2479,12 +2611,45 @@ impl App {
         self.clip.as_ref().map_or(0.0, |c| 0.5 / c.playback.media.fps)
     }
 
+    /// The cut the playing piece is of.
+    fn here(&self) -> CutRef {
+        self.edit.source.get(self.current).copied().unwrap_or((0, self.current))
+    }
+
+    /// After the pieces changed under the playhead (an upper cut moved, a
+    /// transition lengthened): on from edit time `at` (where the playhead
+    /// was) with whatever plays there now.
+    fn relocate(&mut self, at: f64) {
+        if let Some((j, t)) = self.edit.locate(at) {
+            self.scrub_to(j, t);
+        }
+    }
+
+    /// Plays the tracks as they now are (`Edit::reflow`), the playing cut
+    /// on where it still shows, else what shows there now.
+    fn reflow(&mut self) {
+        let (here, t) = (self.here(), self.playing_cut().map(|(_, t)| t));
+        self.edit.reflow();
+        if self.edit.source.get(self.current) == Some(&here) {
+            return;
+        }
+        let Some(t) = t else { return };
+        match self.edit.piece_of(here, t) {
+            Some((j, _)) if self.edit.source[j] == here => self.current = j,
+            Some((j, t)) => {
+                let playing = self.clip.as_ref().is_some_and(|c| c.playback.playing);
+                self.goto(j, t, playing);
+            }
+            None => {}
+        }
+    }
+
     /// The playing cut, and the playhead's clip time. That is where a seek
     /// went even before its frame has decoded, and within the cut: in points
     /// fall between frames, so the frame shown can be a hair before it, and a
     /// keyframe there would be outside the cut, never drawn.
     fn playing_cut(&self) -> Option<(&Cut, f64)> {
-        let cut = self.edit.cuts.get(self.current)?;
+        let cut = self.edit.play.get(self.current)?;
         Some((cut, self.clip.as_ref()?.playback.target().clamp(cut.start, cut.end)))
     }
 
@@ -2495,10 +2660,10 @@ impl App {
     /// The playhead in edit time.
     fn position(&self) -> f64 {
         match &self.clip {
-            Some(c) if self.current < self.edit.cuts.len() => {
+            Some(c) if self.current < self.edit.play.len() => {
                 // In points fall between frames, so the frame shown can be a
                 // hair before the cut.
-                let cut = &self.edit.cuts[self.current];
+                let cut = &self.edit.play[self.current];
                 self.edit.edit_time(self.current, c.playback.position().clamp(cut.start, cut.end))
             }
             _ => 0.0,
@@ -2514,7 +2679,7 @@ impl App {
     /// The keyframes framing the playing cut at its clip time `t`, as
     /// `export` frames it: a cut without any holds the edit's last view.
     fn keyframed(&self, t: f64) -> Option<(&Keyframes, f64)> {
-        crate::project::keyframed(&self.edit.cuts, self.current, t)
+        crate::project::keyframed(&self.edit.play, self.current, t)
     }
 
     /// Where `follow` points in the playing clip's view at its time `t`.
@@ -2543,7 +2708,7 @@ impl App {
     /// look while the edit is borrowed.
     fn aims(&self, t: f64) -> Vec<(Follow, Option<(f64, f64)>)> {
         let mut follows = vec![Follow::Stick];
-        for f in self.edit.cuts.iter().flat_map(|c| c.keyframes.iter()).filter_map(|k| k.follow.clone()) {
+        for f in self.edit.cuts.iter().chain(&self.edit.upper).flat_map(|c| c.keyframes.iter()).filter_map(|k| k.follow.clone()) {
             if !follows.contains(&f) {
                 follows.push(f);
             }
@@ -2567,13 +2732,13 @@ impl App {
             _ => self.look.camera(),
         };
         let grade = self.playing_cut().map(|(_, t)| self.grade(self.current, t)).unwrap_or_default();
-        Camera { grade, lut: self.edit.cuts.get(self.current).and_then(|c| c.lut_applied), ..camera }
+        Camera { grade, lut: self.edit.play.get(self.current).and_then(|c| c.lut_applied), ..camera }
     }
 
     /// Cut `i`'s colour effects at clip time `t`, faded to black where the
     /// edit's fades are.
     fn grade(&self, i: usize, t: f64) -> crate::grade::Grade {
-        let Some(cut) = self.edit.cuts.get(i) else { return Default::default() };
+        let Some(cut) = self.edit.play.get(i) else { return Default::default() };
         let mut grade = crate::grade::grade_at(&cut.effects, t);
         grade.black = self.edit.fades.black(self.edit.edit_time(i, t), self.edit.duration());
         grade
@@ -2702,7 +2867,7 @@ impl App {
         // frame it; not with the Transitions panel open, where the cut is
         // selected to set its transition and scrubbing through it is how
         // that's judged.
-        if !self.transitions_open && self.selected == Some(self.current) && self.clip.as_ref().is_some_and(|c| !c.playback.playing) {
+        if !self.transitions_open && self.selected == Some(self.here()) && self.clip.as_ref().is_some_and(|c| !c.playback.playing) {
             return None;
         }
         let (i, inc) = self.partner.as_ref()?;
@@ -2711,12 +2876,12 @@ impl App {
         let t = p.target();
         // As `camera` frames the playing cut: by its keyframes (or those it
         // holds from before), else the view as it is.
-        let keyed = || crate::project::keyframed(&self.edit.cuts, *i, t).and_then(|(k, at)| k.camera_at(at, &crate::project::held(&|f, t| self.aim_in(&p.media, f, t), at == t, t)));
+        let keyed = || crate::project::keyframed(&self.edit.play, *i, t).and_then(|(k, at)| k.camera_at(at, &crate::project::held(&|f, t| self.aim_in(&p.media, f, t), at == t, t)));
         // The free look of the partner's own kind: a 360 view would push an
         // ordinary video's picture off screen, and the other way round.
-        let look = if self.edit.cuts.get(*i).is_some_and(|c| c.flat) == self.look_flat { self.look } else { self.other_look };
+        let look = if self.edit.play.get(*i).is_some_and(|c| c.flat) == self.look_flat { self.look } else { self.other_look };
         let camera = if self.follow { keyed().unwrap_or_else(|| look.camera()) } else { look.camera() };
-        let camera = Camera { grade: self.grade(*i, t), lut: self.edit.cuts.get(*i).and_then(|c| c.lut_applied), ..camera };
+        let camera = Camera { grade: self.grade(*i, t), lut: self.edit.play.get(*i).and_then(|c| c.lut_applied), ..camera };
         let now = self.transition_now()?;
         let theirs = now.partner_in as usize;
         let camera = now.transition.spin(now.p, now.seconds).map_or(camera, |spin| camera.spun(spin[theirs].0, spin[theirs].1));
@@ -2729,7 +2894,7 @@ impl App {
         let (cut, t) = self.clip_now()?;
         let (j, _) = self.partner.as_ref()?;
         if *j == self.current + 1 {
-            let next = self.edit.cuts.get(*j)?;
+            let next = self.edit.play.get(*j)?;
             let from = self.edit.crossfade_from(self.current)?;
             (t >= from && t < cut.end).then(|| Now { transition: next.transition, p: (t - from) / (cut.end - from), seconds: next.crossfade, partner_in: true })
         } else {
@@ -2742,7 +2907,7 @@ impl App {
     /// going by that dropped a crossfade `tick` had just begun); paused,
     /// where it's been put.
     fn clip_now(&self) -> Option<(&Cut, f64)> {
-        let cut = self.edit.cuts.get(self.current)?;
+        let cut = self.edit.play.get(self.current)?;
         let p = &self.clip.as_ref()?.playback;
         Some((cut, if p.playing { p.now() } else { p.target() }.clamp(cut.start, cut.end)))
     }
@@ -2781,21 +2946,41 @@ impl App {
         let picture = self.library.iter().find(|m| m.input == input).and_then(|m| m.flat).is_some_and(|f| f.picture);
         let end = if picture { ffmpeg::PICTURE_SECONDS } else { duration };
         let lut = self.auto_lut(&input);
-        self.edit.cuts.push(Cut { input, start: 0.0, end, keyframes: Default::default(), stabilize: Some(self.opts.stabilize), note: None, volume: Vec::new(), crossfade: 0.0, transition: Default::default(), effects: Vec::new(), lut, old_lut_strength: None, flat: false, lut_applied: None });
+        self.edit.cuts.push(Cut { input, start: 0.0, end, stabilize: Some(self.opts.stabilize), lut, ..Default::default() });
         self.mark_flat();
         let i = self.edit.cuts.len() - 1;
-        self.selected = Some(i);
-        if self.clip.is_none() {
+        self.selected = Some((0, i));
+        if self.clip.is_none()
+            && let Some((j, t)) = self.edit.piece_of((0, i), 0.0)
+        {
             self.follow = true;
-            self.goto(i, 0.0, true);
+            self.goto(j, t, true);
         }
+    }
+
+    /// Adds the whole clip to the upper video track where it fits nearest
+    /// `upper_at`, selects it and shows it.
+    fn add_upper_cut(&mut self, input: PathBuf, duration: f64) {
+        let at = self.position();
+        self.edit.checkpoint();
+        let picture = self.library.iter().find(|m| m.input == input).and_then(|m| m.flat).is_some_and(|f| f.picture);
+        let end = if picture { ffmpeg::PICTURE_SECONDS } else { duration };
+        let lut = self.auto_lut(&input);
+        let k = self.edit.add_upper(Cut { input, start: 0.0, end, stabilize: Some(self.opts.stabilize), lut, ..Default::default() }, self.upper_at);
+        self.mark_flat();
+        let c = &self.edit.upper[k];
+        self.upper_at = c.at.unwrap_or(0.0) + c.len();
+        self.selected = Some((1, k));
+        self.selected_music = None;
+        self.selected_overlay = None;
+        self.relocate(at);
     }
 
     /// Shows cut `i` at clip time `t`, playing or paused. A cut of another
     /// clip gets a fresh playback of it from the library; the last frame
     /// stays on screen until the new one is decoded.
     fn goto(&mut self, i: usize, t: f64, play: bool) {
-        let Some(cut) = self.edit.cuts.get(i) else { return };
+        let Some(cut) = self.edit.play.get(i) else { return };
         let t = t.clamp(cut.start, cut.end);
         let other_clip = self.clip.as_ref().is_none_or(|c| c.playback.media.input != cut.input);
         if (i != self.current || other_clip) && self.held.is_none() {
@@ -2813,7 +2998,7 @@ impl App {
             }
         }
         self.current = i;
-        let mode = self.edit.cuts[i].stabilize.unwrap_or(self.opts.stabilize);
+        let mode = self.edit.play[i].stabilize.unwrap_or(self.opts.stabilize);
         self.with_playback(|p| p.media.stab.set_mode(mode));
         self.settle_look();
     }
@@ -2823,7 +3008,7 @@ impl App {
     /// out point, a crossfade, a split, undo): swapped only in `goto`, a 360
     /// view made after playing into a 360 cut became the ordinary video's.
     fn settle_look(&mut self) {
-        let flat = self.edit.cuts.get(self.current).is_some_and(|c| c.flat);
+        let flat = self.edit.play.get(self.current).is_some_and(|c| c.flat);
         if flat != self.look_flat {
             std::mem::swap(&mut self.look, &mut self.other_look);
             self.look_flat = flat;
@@ -2840,7 +3025,7 @@ impl App {
     /// the views of the two kinds are kept apart (`project::keyframed`).
     fn mark_flat(&mut self) {
         let mut missing = Vec::new();
-        for cut in &mut self.edit.cuts {
+        for cut in self.edit.cuts.iter_mut().chain(&mut self.edit.upper) {
             if let Some(m) = self.library.iter().find(|m| m.input == cut.input) {
                 cut.flat = m.flat.is_some();
             }
@@ -2858,6 +3043,7 @@ impl App {
                 _ => self.error = Some(said),
             }
         }
+        self.edit.reflow();
     }
 
     /// The LUT a newly added clip gets: the D-Log M one for D-Log M.
@@ -2868,13 +3054,15 @@ impl App {
 
     /// Gives every D-Log M cut without a LUT the D-Log M one, one undo step.
     fn lut_dlog_m_cuts(&mut self) {
-        let todo: Vec<usize> = (0..self.edit.cuts.len()).filter(|&i| self.edit.cuts[i].lut.is_none() && self.auto_lut(&self.edit.cuts[i].input).is_some()).collect();
+        let all = (0..self.edit.cuts.len()).map(|i| (0, i)).chain((0..self.edit.upper.len()).map(|k| (1, k)));
+        let todo: Vec<CutRef> = all.filter(|&r| self.edit.cut(r).is_some_and(|c| c.lut.is_none() && self.auto_lut(&c.input).is_some())).collect();
         if todo.is_empty() {
             return;
         }
         self.edit.checkpoint();
-        for i in todo {
-            self.edit.cuts[i].lut = self.auto_lut(&self.edit.cuts[i].input.clone());
+        for r in todo {
+            let lut = self.auto_lut(&self.edit.cut(r).unwrap().input.clone());
+            self.edit.cut_mut(r).unwrap().lut = lut;
         }
     }
 
@@ -2903,7 +3091,7 @@ impl App {
     }
 
     /// Selects cut `cut`'s sound point `i`, and nothing else.
-    fn select_sound(&mut self, cut: usize, i: usize) {
+    fn select_sound(&mut self, cut: CutRef, i: usize) {
         self.selected_sound = Some((cut, i));
         self.selected_volume = None;
         self.selected_music = None;
@@ -2921,13 +3109,13 @@ impl App {
     /// After cuts were removed or restored: back to edit time `at`, or the
     /// start screen if no cut is left.
     fn after_edit(&mut self, at: f64) {
-        self.selected = self.selected.filter(|&i| i < self.edit.cuts.len());
+        self.selected = self.selected.filter(|&r| self.edit.cut(r).is_some());
         // Its cut may have moved or gone.
         self.selected_sound = None;
         match self.edit.locate(at.min(self.edit.duration())) {
             Some((i, t)) => {
                 // The playback may be of a clip no longer at this index.
-                if self.edit.cuts[i].input != self.clip.as_ref().map_or_else(PathBuf::new, |c| c.playback.media.input.clone()) {
+                if self.edit.play[i].input != self.clip.as_ref().map_or_else(PathBuf::new, |c| c.playback.media.input.clone()) {
                     self.clip = None;
                 }
                 self.goto(i, t, false);
@@ -2945,7 +3133,7 @@ impl App {
         if self.follow {
             self.look = self.shown_view();
             self.follow = false;
-            self.hand_cut = self.edit.cuts.get(self.current).map(|c| (self.current, c.input.clone()));
+            self.hand_cut = self.edit.play.get(self.current).map(|c| (self.here(), c.input.clone()));
         }
         &mut self.look
     }
@@ -2962,13 +3150,13 @@ impl App {
             return;
         }
         let Some((i, input)) = self.hand_cut.take() else { return };
-        let Some(cut) = self.edit.cuts.get(i).filter(|c| c.input == input && c.keyframes.is_empty()) else { return };
+        let Some(cut) = self.edit.cut(i).filter(|c| c.input == input && c.keyframes.is_empty()) else { return };
         let look = if cut.flat { before.1 } else { before.0 };
         if look == View::home(Projection::Perspective) && cut.flat {
             return;
         }
         self.edit.checkpoint();
-        let cut = &mut self.edit.cuts[i];
+        let cut = self.edit.cut_mut(i).unwrap();
         let start = cut.start;
         cut.keyframes.set(start, look, 0.0, &|_, _| None);
     }
@@ -2979,8 +3167,10 @@ impl App {
         let (view, tolerance) = (self.shown_view(), self.tolerance());
         let Some((_, t)) = self.playing_cut() else { return };
         let aims = self.aims(t);
-        if let Some(cut) = self.edit.cuts.get_mut(self.current) {
+        let here = self.here();
+        if let Some(cut) = self.edit.cut_mut(here) {
             cut.keyframes.set(t, view, tolerance, &|f, _| aims.iter().find(|a| &a.0 == f).and_then(|a| a.1));
+            self.edit.reflow();
             self.follow = true;
         }
     }
@@ -2995,9 +3185,9 @@ impl App {
             return;
         }
         let Some((_, t)) = self.playing_cut() else { return };
-        if self.auto_key_at != Some((self.current, t)) {
+        if self.auto_key_at != Some((self.here(), t)) {
             self.edit.checkpoint();
-            self.auto_key_at = Some((self.current, t));
+            self.auto_key_at = Some((self.here(), t));
         }
         self.key_view();
     }
@@ -3009,8 +3199,8 @@ impl App {
         let within = |k: &&crate::view::Keyframe| k.t >= cut.start - tolerance && k.t <= cut.end + tolerance;
         let keys: Vec<_> = cut.keyframes.iter().enumerate().filter(|(_, k)| within(k)).collect();
         let next = if dir < 0.0 { keys.iter().rev().find(|(_, k)| k.t < now - tolerance) } else { keys.iter().find(|(_, k)| k.t > now + tolerance) };
-        let current = self.current;
-        next.map(|(i, _)| *i).map_or(Task::none(), |i| self.update(Message::KeyJump(current, i)))
+        let here = self.here();
+        next.map(|(i, _)| *i).map_or(Task::none(), |i| self.update(Message::KeyJump(here, i)))
     }
 
     fn with_playback(&mut self, f: impl FnOnce(&mut Playback)) {
@@ -3032,7 +3222,7 @@ impl App {
             c.shown = Some(Arc::new(Shown::new(frame, fix)));
             self.held = None;
         }
-        let Some(cut) = self.edit.cuts.get(self.current) else { return };
+        let Some(cut) = self.edit.play.get(self.current) else { return };
         let p = &c.playback;
         // A cut running to its clip's end has paused there (`ended`), and
         // still moves on.
@@ -3041,7 +3231,7 @@ impl App {
             return;
         }
         let next = self.current + 1;
-        let next_cut = self.edit.cuts.get(next);
+        let next_cut = self.edit.play.get(next);
         let loaded = |input: &PathBuf| self.library.iter().find(|m| &m.input == input);
         // A next cut that starts where this one ends in the same clip (after
         // a split) just plays on: no seek, nothing to prime.
@@ -3101,7 +3291,7 @@ impl App {
             }
             Some(_) if carries_on && !p.ended => {
                 self.current = next;
-                let mode = self.edit.cuts[next].stabilize.unwrap_or(self.opts.stabilize);
+                let mode = self.edit.play[next].stabilize.unwrap_or(self.opts.stabilize);
                 self.with_playback(|p| p.media.stab.set_mode(mode));
             }
             // Out of a crossfade: the cut that came in plays on.
@@ -3231,13 +3421,14 @@ impl App {
                 // A cut's sound point selected: another at the playhead.
                 "k" | "K" if self.selected_sound.is_some() => {
                     let Some((_, t)) = self.playing_cut() else { return Task::none() };
-                    let cut = self.current;
-                    let db = crate::project::volume_at(&self.edit.cuts[cut].volume, t);
-                    match self.edit.cuts[cut].volume.iter().position(|k| (k.t - t).abs() < 0.01) {
+                    let cut = self.here();
+                    let volume = &self.edit.play[self.current].volume;
+                    let db = crate::project::volume_at(volume, t);
+                    match volume.iter().position(|k| (k.t - t).abs() < 0.01) {
                         Some(i) => self.select_sound(cut, i),
                         None => {
                             self.edit.checkpoint();
-                            let keys = &mut self.edit.cuts[cut].volume;
+                            let keys = &mut self.edit.cut_mut(cut).unwrap().volume;
                             let i = keys.partition_point(|k| k.t <= t);
                             keys.insert(i, crate::project::VolumeKey { t, volume: db });
                             self.select_sound(cut, i);
@@ -3247,7 +3438,7 @@ impl App {
                 "k" | "K" => return self.update(Message::KeyAdd),
                 "j" | "J" => {
                     if let Some(k) = self.current_key() {
-                        let ease = self.edit.cuts[self.current].keyframes[k].ease;
+                        let ease = self.edit.play[self.current].keyframes[k].ease;
                         let i = Ease::ALL.iter().position(|&e| e == ease).unwrap_or(0);
                         return self.update(Message::KeyEase(Ease::ALL[(i + 1) % Ease::ALL.len()]));
                     }
@@ -3412,6 +3603,11 @@ impl App {
                 text(if self.edit.music.clips.is_empty() { "Add music under the edit" } else { "Add more music, after the last song" }),
                 tooltip::Position::Bottom,
             ),
+            tip(
+                icon_button(ADD_UPPER, (!self.edit.cuts.is_empty()).then_some(Message::AddUpper)),
+                text("Add clips on a video track over the main one, at the playhead: each covers the main track while it plays, its sound mixed in"),
+                tooltip::Position::Bottom,
+            ),
             tip(icon_button(ADD_OVERLAY, Some(Message::AddOverlay)), text("Add pictures over the picture, at the playhead (PNG transparency shows through)"), tooltip::Position::Bottom),
             tip(icon_button(ADD_TEXT, Some(Message::AddText)), text("Add text over the picture, at the playhead (typed in the Text panel at the left)"), tooltip::Position::Bottom),
             tip(icon_button(OPEN_PROJECT, Some(Message::OpenProject)), text("Open a saved edit (Ctrl+Shift+O)"), tooltip::Position::Bottom),
@@ -3514,15 +3710,10 @@ impl App {
         };
 
         let current = self.current_key();
-        let aiming = current.map(|k| Aiming::of(&self.edit.cuts[self.current].keyframes[k].follow));
+        let aiming = current.map(|k| Aiming::of(&self.edit.play[self.current].keyframes[k].follow));
         let tolerance = self.tolerance();
         let offsets = crate::project::offsets(&self.edit.cuts);
-        let blocks = self
-            .edit
-            .cuts
-            .iter()
-            .zip(offsets)
-            .map(|(c, from)| {
+        let block = |(c, from): (&Cut, f64)| {
                 let keys = c.keyframes.iter().enumerate().filter(|(_, k)| k.t >= c.start - tolerance && k.t <= c.end + tolerance).map(|(i, k)| (i, k.t, k.ease, k.follow.is_some())).collect();
                 // Only those in the cut, and one either side for its ends.
                 let thumbs = self.thumbs.get(&c.input).map_or_else(Vec::new, |all| {
@@ -3530,9 +3721,24 @@ impl App {
                     let to = (all.partition_point(|(t, _)| *t <= c.end) + 1).min(all.len());
                     all[from..to].to_vec()
                 });
-                timeline::Block { labels: cut_labels(c, self.opts.stabilize), from, len: c.end - c.start, start: c.start, keys, sound: c.volume.clone(), thumbs, crossfade: c.crossfade, transition: c.transition, effects: c.effects.iter().map(|k| k.t).collect() }
-            })
-            .collect();
+                timeline::Block {
+                    labels: cut_labels(c, self.opts.stabilize),
+                    from,
+                    len: c.end - c.start,
+                    start: c.start,
+                    keys,
+                    sound: c.volume.clone(),
+                    thumbs,
+                    crossfade: c.crossfade,
+                    transition: c.transition,
+                    out: c.out_crossfade,
+                    out_transition: c.out_transition,
+                    effects: c.effects.iter().map(|k| k.t).collect(),
+                }
+            };
+        let blocks: Vec<_> = self.edit.cuts.iter().zip(offsets.iter().copied()).map(block).collect();
+        let upper = self.edit.upper.iter().map(|c| (c, c.at.unwrap_or(0.0))).map(block).collect();
+        let cut_edges = blocks.iter().flat_map(|b: &timeline::Block| [b.from, b.from + b.len]).collect();
         let (timeline_start, timeline_span) = self.timeline_window();
         let music = self
             .edit
@@ -3548,7 +3754,10 @@ impl App {
             })
             .collect();
         let timeline = timeline::Timeline {
+            track: 0,
             blocks,
+            upper,
+            cut_edges,
             music,
             selected_music: self.selected_music,
             volume: self.edit.music.keyframes.clone(),
@@ -3560,7 +3769,7 @@ impl App {
             span: timeline_span,
             position: self.position(),
             selected: self.selected,
-            current: current.map(|k| (self.current, k)),
+            current: current.map(|k| (self.here(), k)),
             overlays: self.overlay_blocks(crate::overlay::Track::Overlay),
             texts: self.overlay_blocks(crate::overlay::Track::Text),
             selected_overlay: self.selected_overlay,
@@ -3572,7 +3781,7 @@ impl App {
         let point = self.selected_volume.is_some() || self.selected_sound.is_some();
         let can_split = match music {
             Some(c) => self.position() > c.at + edit::MIN_CUT && self.position() < c.ends() - edit::MIN_CUT,
-            None => self.edit.cuts.get(self.current).is_some_and(|c| p.target() > c.start + edit::MIN_CUT && p.target() < c.end - edit::MIN_CUT),
+            None => self.edit.play.get(self.current).is_some_and(|c| p.target() > c.start + edit::MIN_CUT && p.target() < c.end - edit::MIN_CUT),
         };
         let transport = row![
             tip(
@@ -3600,7 +3809,7 @@ impl App {
             ),
             tip(icon_button(KEY_DELETE, current.map(|_| Message::KeyDelete)), text("Delete this keyframe (Del)"), tooltip::Position::Top),
             tip(
-                pick_list(&Ease::ALL[..], current.map(|k| self.edit.cuts[self.current].keyframes[k].ease), Message::KeyEase).placeholder("Ease").width(96),
+                pick_list(&Ease::ALL[..], current.map(|k| self.edit.play[self.current].keyframes[k].ease), Message::KeyEase).placeholder("Ease").width(96),
                 text("How this keyframe moves on to the next (J cycles)"),
                 // Below: the list opens upwards and the hint would cover it.
                 tooltip::Position::Bottom,
@@ -3736,6 +3945,7 @@ const ADD_MUSIC: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 const NEW_PROJECT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v4a2 2 0 0 0 2 2h4M9 15h6M12 18v-6"/></svg>"#;
 const ADD_OVERLAY: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="M17 12l-4-4-8 8"/><path d="M20 15v6M17 18h6"/></svg>"#;
 const ADD_TEXT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h12v3M10 4v16M7 20h6"/><path d="M19 13v8M15 17h8"/></svg>"#;
+const ADD_UPPER: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="13" height="11" rx="2"/><path d="M6 5h10a2 2 0 0 1 2 2v3"/><path d="M20 14v7M16.5 17.5h7"/></svg>"#;
 const ADD_CLIP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="14" height="18" rx="2"/><path d="M6 3v18M12 3v18M2 8h4M2 16h4M12 8h4M12 16h4M20 9v6M17 12h6"/></svg>"#;
 const OPEN_PROJECT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>"#;
 const SAVE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7M7 3v4a1 1 0 0 0 1 1h7"/></svg>"#;
@@ -3805,6 +4015,22 @@ fn labelled<'a>(label: &'a str, widget: impl Into<Element<'a, Message>>) -> Elem
     row![text(label), widget.into()].spacing(6).align_y(Alignment::Center).into()
 }
 
+/// What becomes of a queued clip once it has loaded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Add {
+    /// Loaded only, for a project's cuts.
+    Load,
+    /// Added as a cut at the end of the main track.
+    Main,
+    /// Added to the upper video track (`App::upper_at`).
+    Upper,
+}
+
+/// The files the add-clips dialogs list.
+const CLIP_TYPES: &[&str] = &[
+    "OSV", "osv", "mp4", "MP4", "mov", "MOV", "mkv", "MKV", "m4v", "M4V", "avi", "AVI", "webm", "WEBM", "mts", "MTS", "jpg", "JPG", "jpeg", "JPEG", "png", "PNG", "webp", "WEBP", "bmp", "BMP", "tif", "TIF", "tiff", "TIFF",
+];
+
 /// A finished colour track: its CSV, where it starts (cut and clip time),
 /// how many samples found the colour, and the colour.
 #[derive(Debug, Clone)]
@@ -3812,7 +4038,7 @@ pub struct TrackDone {
     path: PathBuf,
     /// The clip tracked, to find its cut again when the track is done.
     input: PathBuf,
-    cut: usize,
+    cut: CutRef,
     t: f64,
     found: usize,
     rows: usize,

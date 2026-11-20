@@ -851,6 +851,21 @@ pub struct Mix<'a> {
     pub length: f64,
     /// The edit's fades from and to black, the sound with the picture.
     pub fades: crate::project::Fades,
+    /// The upper video track's cuts, their sound laid over the clips'.
+    pub over: &'a [Placed<'a>],
+}
+
+/// A cut's sound placed on the edit (an upper video track's): `len` seconds
+/// of `input` from `start`, at edit time `at`, with its volume points (clip
+/// time) and equal-power fades over its transitions, at the clips' level.
+pub struct Placed<'a> {
+    pub input: &'a Path,
+    pub start: f64,
+    pub len: f64,
+    pub at: f64,
+    pub volume: &'a [crate::project::VolumeKey],
+    pub fade_in: f64,
+    pub fade_out: f64,
 }
 
 impl Sound<'_> {
@@ -874,7 +889,7 @@ impl Sound<'_> {
 impl Mix<'_> {
     /// Whether it changes anything.
     fn matters(&self) -> bool {
-        self.sound_db != 0.0 || !self.music.clips.is_empty() || !self.fades.is_none()
+        self.sound_db != 0.0 || !self.music.clips.is_empty() || !self.fades.is_none() || !self.over.is_empty()
     }
 }
 
@@ -1039,6 +1054,27 @@ fn mixed(cmd: &mut Command, audio: &[Sound<'_>], mix: &Mix<'_>) -> Result<String
         let delay = (clip.at * 1000.0).round();
         graph += &format!("{chain},adelay=delays={delay}:all=1,{}[m{input}];", level_filter(mix.music.volume, &mix.music.keyframes, "t"));
         parts.push(format!("[m{input}]"));
+    }
+    for placed in mix.over {
+        if placed.len <= 0.0 || !has_audio(placed.input).unwrap_or(false) {
+            continue;
+        }
+        let input = audio.len() + parts.len();
+        cmd.args(["-ss", &placed.start.to_string(), "-t", &placed.len.to_string()]).arg("-i").arg(placed.input);
+        let mut chain = format!("[{input}:a:0]{stereo},apad=whole_dur={}", placed.len);
+        if !placed.volume.is_empty() {
+            chain += &format!(",{}", level_filter(0.0, placed.volume, &format!("(t+{})", placed.start)));
+        }
+        if placed.fade_in > 0.0 {
+            chain += &format!(",afade=t=in:st=0:d={}:curve=qsin", placed.fade_in.min(placed.len));
+        }
+        if placed.fade_out > 0.0 {
+            let d = placed.fade_out.min(placed.len);
+            chain += &format!(",afade=t=out:st={}:d={d}:curve=qsin", placed.len - d);
+        }
+        let delay = (placed.at * 1000.0).round();
+        graph += &format!("{chain},adelay=delays={delay}:all=1,volume={}[o{input}];", crate::project::gain(mix.sound_db));
+        parts.push(format!("[o{input}]"));
     }
     let mut fades = String::new();
     if mix.fades.fade_in > 0.0 {
